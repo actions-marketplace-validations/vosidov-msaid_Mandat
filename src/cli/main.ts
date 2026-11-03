@@ -17,10 +17,11 @@ import { describe, toOcsf, toOtelSpan } from "../ledger/export.ts";
 import { createControlPlane } from "../controlplane/server.ts";
 import { hashApiKey, loadConfig, type ControlPlaneConfig } from "../controlplane/config.ts";
 import { Bridge } from "../bridge.ts";
+import { clearSession, currentIdToken, discover, loadSession, login, openSystemBrowser, saveSession } from "../oidc.ts";
 import { readJson, writeJsonAtomic } from "../util.ts";
 
 const VERSION = "0.1.0";
-const BOOLEANS = ["version", "active", "check", "force", "json", "tainted", "help", "h", "follow", "frozen", "no-color", "shadow"];
+const BOOLEANS = ["version", "login", "no-browser", "disable-dev-idp", "active", "check", "force", "json", "tainted", "help", "h", "follow", "frozen", "no-color", "shadow"];
 
 const HELP = `mandat ${VERSION} — authorization, delegation and audit for AI agent actions
 
@@ -50,10 +51,17 @@ Agents, approvals, revocation  (talk to the control plane: --url, --key or MANDA
   mandat revoke --agent ID [--version V] | --user SUB | --task ID | --tenant T | --jti ID  [--reason R]
   mandat token --agent ID --secret S --user SUB --resource URL [--tools a,b] [--version V]   Dev: mint a task token
 
+Real users (OIDC: Auth0, Okta, Entra ID, Keycloak)
+  mandat idp add --issuer URL --client-id ID [--tenant-claim CLAIM] [--disable-dev-idp]   Trust an IdP (edits mandat.config.json)
+  mandat idp list
+  mandat login --issuer URL --client-id ID [--port 8765] [--organization ORG] [--no-browser]   Browser login (PKCE)
+  mandat login status | mandat logout
+
 Connect real agents (Claude Code, Codex, Cursor, Claude Desktop)
-  mandat bridge --url MCP_URL --agent ID [--mandat URL] [--user SUB] [--email E] [--version V] [--tools a,b]
+  mandat bridge --url MCP_URL --agent ID [--mandat URL] [--login | --user SUB] [--version V] [--tools a,b]
       stdio MCP server that acts as agent ID and refreshes task tokens automatically.
-      Secret: env MANDAT_AGENT_SECRET (or --secret). Real IdP user token: env MANDAT_SUBJECT_TOKEN.
+      --login acts for the user signed in with "mandat login"; --user uses the dev IdP.
+      Secret: env MANDAT_AGENT_SECRET (or --secret). Raw IdP token instead: env MANDAT_SUBJECT_TOKEN.
 
 Ledger  (US-6, US-8)
   mandat ledger verify [file]                   Verify the hash chain
@@ -81,6 +89,9 @@ export async function main(argv: string[]): Promise<number> {
     case "revoke": return revoke(args);
     case "token": return token(args);
     case "bridge": return bridge(args);
+    case "login": return loginCmd(args);
+    case "logout": console.log(clearSession() ? "✓ Logged out" : "Not logged in."); return 0;
+    case "idp": return idpCmd(sub, args);
     default:
       console.error(`Unknown command '${cmd}'. Run \`mandat --help\`.`);
       return 2;
@@ -478,9 +489,77 @@ async function bridge(args: Args): Promise<number> {
     agentSecret: secret,
     agentVersion: args.str("version"),
     subjectToken: process.env.MANDAT_SUBJECT_TOKEN,
+    subjectTokenProvider: args.bool("login") ? () => currentIdToken() : undefined,
     user: { sub: args.str("user", "user:local")!, email: args.str("email"), tenant: args.str("tenant") },
     tools: args.list("tools"),
   });
   await b.run();
   return 0;
+}
+
+async function loginCmd(args: Args): Promise<number> {
+  if (args._[1] === "status") {
+    const s = loadSession();
+    if (!s) { console.log("Not logged in."); return 1; }
+    const left = s.expires_at - Math.floor(Date.now() / 1000);
+    console.log(`Logged in as ${s.user.email ?? s.user.sub} (${s.user.sub})
+  issuer   ${s.issuer}
+  client   ${s.client_id}
+  id token ${left > 0 ? `valid ${Math.round(left / 60)} min` : "expired"}${s.refresh_token ? ", refresh token stored" : ", no refresh token (log in again when it expires)"}`);
+    return 0;
+  }
+  const issuer = args.str("issuer") ?? process.env.MANDAT_IDP_ISSUER;
+  const clientId = args.str("client-id") ?? process.env.MANDAT_IDP_CLIENT_ID;
+  if (!issuer || !clientId) { console.error("Usage: mandat login --issuer https://<tenant>.auth0.com/ --client-id <native app client id> [--port 8765]"); return 2; }
+  const port = args.num("port", 8765);
+  console.error(`Opening the browser to sign in. Callback: http://127.0.0.1:${port}/callback`);
+  try {
+    const s = await login({
+      issuer, clientId, port,
+      extraParams: args.str("organization") ? { organization: args.str("organization")! } : undefined,
+      openBrowser: (url) => {
+        console.error(`If the browser does not open, visit:
+  ${url}`);
+        if (!args.bool("no-browser")) openSystemBrowser(url);
+      },
+    });
+    saveSession(s);
+    console.log(`✓ Logged in as ${s.user.email ?? s.user.sub} (${s.user.sub})`);
+    if (!s.refresh_token) console.log("  Note: no refresh token was issued; run `mandat login` again when the session expires.");
+    return 0;
+  } catch (e) {
+    console.error(`Login failed: ${(e as Error).message}`);
+    return 1;
+  }
+}
+
+async function idpCmd(sub: string | undefined, args: Args): Promise<number> {
+  const cfgPath = args.str("config", "mandat.config.json")!;
+  if (!existsSync(cfgPath)) { console.error(`${cfgPath} not found — run \`mandat init\` first.`); return 1; }
+  // Edit the raw file (not loadConfig) so ${env:…} placeholders are preserved.
+  const raw = readJson<ControlPlaneConfig>(cfgPath);
+  if (!sub || sub === "list") {
+    const list = raw.trustedIssuers ?? [];
+    if (!list.length) console.log("No trusted identity providers.");
+    for (const t of list) console.log(`● ${t.issuer}
+    audience ${JSON.stringify(t.audience)}  jwks ${t.jwks_uri}${t.tenant_claim ? `  tenant claim ${t.tenant_claim}` : ""}`);
+    console.log(`Dev IdP: ${raw.devIdp ? "ENABLED (anyone can mint user tokens)" : "disabled"}`);
+    return 0;
+  }
+  if (sub === "add") {
+    const issuer = args.str("issuer");
+    const clientId = args.str("client-id");
+    if (!issuer || !clientId) { console.error("Usage: mandat idp add --issuer URL --client-id ID [--tenant-claim CLAIM] [--disable-dev-idp]"); return 2; }
+    let meta;
+    try { meta = await discover(issuer); } catch (e) { console.error((e as Error).message); return 1; }
+    const entry = { issuer: meta.issuer, jwks_uri: meta.jwks_uri, audience: clientId, ...(args.str("tenant-claim") ? { tenant_claim: args.str("tenant-claim") } : {}) };
+    raw.trustedIssuers = [...(raw.trustedIssuers ?? []).filter((t) => t.issuer !== meta.issuer), entry];
+    if (args.bool("disable-dev-idp")) raw.devIdp = false;
+    writeJsonAtomic(cfgPath, raw);
+    console.log(`✓ Trusting ${meta.issuer} (ID tokens for client ${clientId})${args.bool("disable-dev-idp") ? "; dev IdP disabled" : ""}
+  Restart \`mandat serve\` to apply.`);
+    return 0;
+  }
+  console.error("Usage: mandat idp add|list");
+  return 2;
 }

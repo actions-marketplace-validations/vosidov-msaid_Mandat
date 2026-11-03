@@ -18,8 +18,10 @@ export interface BridgeOptions {
   agentId: string;
   agentSecret: string;
   agentVersion?: string;
-  /** User token from a real IdP. If absent, the dev IdP is used with `user`. */
+  /** User token from a real IdP. If absent, `subjectTokenProvider` or else the dev IdP (with `user`) is used. */
   subjectToken?: string;
+  /** Returns a fresh user ID token, e.g. from the `mandat login` session. */
+  subjectTokenProvider?: () => Promise<string>;
   user?: { sub: string; email?: string; tenant?: string };
   tools?: string[];
   log?: (msg: string) => void;
@@ -42,7 +44,8 @@ export class Bridge {
   async taskToken(force = false): Promise<string> {
     if (!force && this.token && this.token.exp - Date.now() / 1000 > 30) return this.token.value;
     this.refreshing ??= (async () => {
-      const subject = this.o.subjectToken ?? (await devLogin(this.o.mandatUrl, this.o.user ?? { sub: "user:local" }));
+      const subject = this.o.subjectToken
+        ?? (this.o.subjectTokenProvider ? await this.o.subjectTokenProvider() : await devLogin(this.o.mandatUrl, this.o.user ?? { sub: "user:local" }));
       const details: AuthorizationDetail[] | undefined = this.o.tools?.length ? [{ type: "mandat_tool_call", tools: this.o.tools }] : undefined;
       const t = await exchangeToken({
         mandatUrl: this.o.mandatUrl,

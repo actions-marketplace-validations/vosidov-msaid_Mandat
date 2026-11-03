@@ -12,7 +12,7 @@ It also ships a **scanner** that checks MCP servers and client configs for the a
 
 This repo is the **MVP** (PRD phase 0–3 months, plus the core of delegation from phase 3–6). The spec it implements is in [`specs/rpd.md`](specs/rpd.md).
 
-> Zero runtime dependencies. Node ≥ 23.6 runs the TypeScript sources directly (type stripping), and there is no build step.
+> Zero runtime dependencies. The npm package ships compiled JavaScript (Node ≥ 20). For development, Node ≥ 23.6 runs the TypeScript sources directly.
 
 ---
 
@@ -146,6 +146,44 @@ approval_mode = "approve"
 
 ---
 
+## Real users with Auth0 (or any OIDC provider)
+
+By default, `mandat init` turns on a dev IdP: anyone can claim to be any user. To have agents act for **real, signed-in people**, connect your identity provider. Auth0 is shown here; Okta, Entra ID and Keycloak work the same way, because Mandat only relies on standard OIDC discovery, JWKS and PKCE.
+
+**1. Create an Auth0 application** (Dashboard → Applications → *Create Application*)
+
+- **Type:** *Native*. It's a CLI, so there's no client secret; PKCE protects the login instead.
+- **Settings → Allowed Callback URLs:** `http://127.0.0.1:8765/callback`
+- **Settings → Advanced → Grant Types:** *Authorization Code* and *Refresh Token* (both on by default for Native apps).
+- Copy the **Domain** and **Client ID**. You need at least one user (User Management → Users) or a social connection.
+
+**2. Trust it on the control plane**, then restart `mandat serve`:
+
+```bash
+mandat idp add --issuer https://YOUR_DOMAIN/ --client-id YOUR_CLIENT_ID --disable-dev-idp
+# Auth0 Organizations: add --tenant-claim org_id
+```
+
+**3. Sign in once** (this opens your browser):
+
+```bash
+mandat login --issuer https://YOUR_DOMAIN/ --client-id YOUR_CLIENT_ID
+mandat login status
+```
+
+The session is stored in `~/.mandat/session.json` (mode 0600) and refreshed automatically when Auth0 issues a refresh token. `login status` tells you whether it did.
+
+**4. Let your agent act for you:** in the bridge command, replace `--user …` with `--login`:
+
+```bash
+claude mcp add acme -e MANDAT_AGENT_SECRET=<secret> -- \
+  node D:/Projects/Mandat1/bin/mandat.ts bridge --url http://127.0.0.1:7401/mcp --mandat http://127.0.0.1:7400 --agent claude-code --login
+```
+
+Every call is now attributed to the Auth0 user, for example `principal.sub = "auth0|…"`, with their e-mail and `org_id` as tenant. That identity is what policies, approvals and the ledger see. The STS accepts only ID tokens issued by the trusted tenant **to that client ID**, so tokens issued to your other Auth0 apps are rejected.
+
+---
+
 ## Architecture
 
 ```
@@ -222,7 +260,8 @@ Tooling: `mandat policy check|test|eval` and `mandat bench`. On this machine the
 | **US-2** `protect(server)` for the TS SDK | ✅ (duck-typed adapter, tested against an SDK-shaped fake; not yet run against the real SDK or MCP Inspector) · Python ❌ |
 | **US-3** Argument policies with p99 < 5 ms; approval in Slack with context | ✅ (Slack: Block Kit message + signed interactivity endpoint `/slack/interactions`) |
 | **US-4** Single-task token via RFC 8693 with `sub` = user, `act` = agent, RAR, 5 min | ✅ for Mandat-protected MCP servers · downstream tokens for Stripe/CRM ❌ |
-| **US-5** ID-JAG / Okta XAA | ❌ (any OIDC IdP can be trusted through JWKS: `trustedIssuers`) |
+| **US-5** ID-JAG / Okta XAA | ❌ |
+| Real IdP users (PRD Must: Auth0, Okta, Entra, Keycloak) | ✅ OIDC login with PKCE (`mandat login`), `mandat idp add`, ID-token exchange. Covered by tests against an Auth0-like fake IdP |
 | **US-6** OCSF event with the delegation chain | ✅ export via `/api/ledger/export`; OTLP push of spans (`ledger.otlp`) · direct SIEM connectors (Splunk HEC and others) ❌ |
 | **US-7** Revocation by agent, version, user, task, tenant or token in ≤ 10 s | ✅ < 1 s in tests; issuance blocked until lifted |
 | **US-8** DPO report from the hash chain, retention check | ✅ `mandat ledger report`, console |
@@ -233,7 +272,8 @@ Tooling: `mandat policy check|test|eval` and `mandat bench`. On this machine the
 
 ## Security notes and known limitations
 
-- **Dev IdP.** `devIdp: true` (the `mandat init` default) lets anyone mint user tokens on `/dev/login`. Turn it off and configure `trustedIssuers` before any real use.
+- **Dev IdP.** `devIdp: true` (the `mandat init` default) lets anyone mint user tokens on `/dev/login`. Disable it with `mandat idp add … --disable-dev-idp` before any real use.
+- **Approver identity.** Approvers still authenticate with API keys (console/CLI) or Slack, not through the IdP, so self-approval is only detected when the approver id matches the user's `sub` or e-mail.
 - **Storage.** The control plane keeps state in JSON files under `dataDir` (single process, no HA). The `JsonCollection` interface is the seam for a database.
 - **Ledger.** The ledger is tamper-*evident*, not tamper-*proof*: someone with write access could rewrite the whole chain. For that threat, anchor the head hash externally (WORM storage, a transparency log, or an eIDAS timestamp; see open question 8). Records are ordered by `seq`, which is arrival order; `ts` is event time.
 - **Auth failures** (bad or revoked token → `401`) are returned to the caller but not yet written to the ledger.
@@ -244,8 +284,9 @@ Tooling: `mandat policy check|test|eval` and `mandat bench`. On this machine the
 ## Development
 
 ```bash
-npm test            # 40 tests: expression language, PDP, STS, guard, approvals, ledger, scanner, end-to-end over HTTP
+npm test            # 46 tests: expression language, PDP, STS, guard, approvals, ledger, scanner, end-to-end over HTTP
 npm run typecheck   # tsc --strict (dev dependency only)
+npm run build       # dist/ (plain JS + .d.ts) for the npm package; Node >= 20
 npm run demo
 ```
 

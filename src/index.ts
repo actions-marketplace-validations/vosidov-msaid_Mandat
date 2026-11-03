@@ -26,6 +26,7 @@ export { scanConfigFile, scanServers, scanSource } from "./scan/static.ts";
 export { createControlPlane, type ControlPlane } from "./controlplane/server.ts";
 export { loadConfig, hashApiKey, type ControlPlaneConfig } from "./controlplane/config.ts";
 export { Bridge, type BridgeOptions } from "./bridge.ts";
+export { login, discover, refreshSession, currentIdToken, loadSession, saveSession, clearSession, pkcePair, OidcError, type Session, type LoginOptions, type OidcMetadata } from "./oidc.ts";
 export { exchangeToken, devLogin, McpHttpClient, type ExchangeOptions, type TaskToken } from "./client.ts";
 
 export interface CreateGuardOptions extends Partial<Pick<GuardOptions, "mode" | "approvalWaitMs" | "pinning" | "redaction" | "source" | "log">> {
