@@ -1,0 +1,42 @@
+name: "Mandat MCP scan"
+description: "Scan MCP client configs, server source and (optionally) a live MCP endpoint for authorization and supply-chain risks. Emits SARIF."
+inputs:
+  configs:
+    description: "Space-separated MCP config files (e.g. .mcp.json .cursor/mcp.json .vscode/mcp.json)"
+    default: ""
+  src:
+    description: "Source directory of your MCP server to scan"
+    default: ""
+  url:
+    description: "Optional live MCP endpoint to scan"
+    default: ""
+  fail-on:
+    description: "critical | high | medium | low | none"
+    default: "high"
+outputs:
+  sarif:
+    description: "Path of the SARIF report"
+    value: ${{ steps.scan.outputs.sarif }}
+runs:
+  using: composite
+  steps:
+    - id: scan
+      shell: bash
+      env:
+        CONFIGS: ${{ inputs.configs }}
+        SRC: ${{ inputs.src }}
+        URL: ${{ inputs.url }}
+        FAIL_ON: ${{ inputs.fail-on }}
+      run: |
+        set -u
+        status=0
+        out="$RUNNER_TEMP/mandat.sarif"
+        args=()
+        [ -n "$SRC" ] && args+=(--src "$SRC")
+        # shellcheck disable=SC2086
+        node "$GITHUB_ACTION_PATH/bin/mandat.ts" scan-config $CONFIGS "${args[@]}" --format sarif --out "$out" --fail-on "$FAIL_ON" || status=$?
+        if [ -n "$URL" ]; then
+          node "$GITHUB_ACTION_PATH/bin/mandat.ts" scan "$URL" --format text --fail-on "$FAIL_ON" || status=$?
+        fi
+        echo "sarif=$out" >> "$GITHUB_OUTPUT"
+        exit $status

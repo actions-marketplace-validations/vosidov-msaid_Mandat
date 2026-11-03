@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Mandat Console</title>
+  <link rel="stylesheet" href="/console.css">
+  <script src="/console.js" defer></script>
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <span class="seal" aria-hidden="true">M</span>
+      <div>
+        <div class="name">Mandat</div>
+        <div class="tag">Authorization · delegation · audit for AI agents</div>
+      </div>
+    </div>
+    <form id="login" class="login" autocomplete="off">
+      <input id="apikey" type="password" placeholder="API key (mdt_…)" aria-label="API key">
+      <button type="submit">Connect</button>
+      <span id="who" class="who"></span>
+    </form>
+  </header>
+
+  <section class="stats" id="stats" aria-live="polite"></section>
+
+  <nav class="tabs" role="tablist">
+    <button role="tab" data-tab="approvals" aria-selected="true">Approvals <span id="badge" class="badge" hidden></span></button>
+    <button role="tab" data-tab="activity">Activity</button>
+    <button role="tab" data-tab="agents">Agents</button>
+    <button role="tab" data-tab="revocations">Revocations</button>
+    <button role="tab" data-tab="policy">Policy</button>
+    <button role="tab" data-tab="audit">Audit</button>
+  </nav>
+
+  <main>
+    <section id="tab-approvals" class="panel"></section>
+    <section id="tab-activity" class="panel" hidden>
+      <div class="filters">
+        <input id="f-agent" placeholder="agent">
+        <input id="f-tool" placeholder="tool">
+        <input id="f-sub" placeholder="user (sub)">
+        <select id="f-type">
+          <option value="">all events</option>
+          <option value="agent.tool_call" selected>tool calls</option>
+          <option value="approval.*">approvals</option>
+          <option value="token.issued">tokens</option>
+          <option value="revocation.*">revocations</option>
+          <option value="policy.changed">policy changes</option>
+          <option value="tool.drift">tool drift</option>
+        </select>
+        <select id="f-effect">
+          <option value="">any decision</option>
+          <option value="allow">allowed</option>
+          <option value="deny">denied</option>
+          <option value="pending">pending</option>
+        </select>
+      </div>
+      <div class="scroll"><table id="activity"></table></div>
+      <pre id="record" class="record" hidden></pre>
+    </section>
+    <section id="tab-agents" class="panel" hidden></section>
+    <section id="tab-revocations" class="panel" hidden></section>
+    <section id="tab-policy" class="panel" hidden></section>
+    <section id="tab-audit" class="panel" hidden></section>
+  </main>
+  <div id="toast" class="toast" role="status" hidden></div>
+</body>
+</html>

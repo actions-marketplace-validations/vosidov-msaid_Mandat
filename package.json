@@ -1,0 +1,49 @@
+{
+  "name": "mandat",
+  "version": "0.1.0",
+  "description": "Authorization, delegation and audit for AI agent actions (MCP-first). Policy on every tool call, per-task delegated tokens, hash-chained audit ledger, MCP scanner.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "bin": {
+    "mandat": "./dist/cli/bin.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "node scripts/build.ts",
+    "prepack": "node scripts/build.ts",
+    "test": "node --test \"test/**/*.test.ts\"",
+    "typecheck": "tsc -p tsconfig.json",
+    "controlplane": "node bin/mandat.ts serve",
+    "demo:server": "node examples/refund-server/server.ts",
+    "demo": "node examples/demo.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.2",
+    "typescript": "^5.9.3"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "ai-agents",
+    "authorization",
+    "oauth",
+    "token-exchange",
+    "audit",
+    "security"
+  ]
+}
