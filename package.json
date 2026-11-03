@@ -8,7 +8,7 @@
     "node": ">=20"
   },
   "bin": {
-    "mandat": "./dist/cli/bin.js"
+    "mandat": "dist/cli/bin.js"
   },
   "exports": {
     ".": {
