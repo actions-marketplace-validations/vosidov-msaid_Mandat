@@ -9,7 +9,8 @@
 //   6. run the handler, then write ONE hash-chained Action Record with decision + outcome
 
 import type { KeyObject } from "node:crypto";
-import { JwksClient, JwtError, verifyJwt, type JwtPayload } from "../sts/jwt.ts";
+import { JwksClient, JwtError, decodeJwt, verifyJwt, type JwtPayload } from "../sts/jwt.ts";
+import { RateGate } from "../util.ts";
 import { actorChain, matchRevocation, type MandatClaim, type Revocation } from "../sts/revocation.ts";
 import { HIGH_RISK, type AuthorizationDetail, type CompiledPolicy, type Decision, type Obligation } from "../policy/engine.ts";
 import { approvalBinding, type ApprovalRequest, type ApprovalService, type NewApproval } from "../approvals/approvals.ts";
@@ -101,10 +102,13 @@ export interface CallContext {
 export class AuthError extends Error {
   status: number;
   code: string;
-  constructor(code: string, message: string, status = 401) {
+  /** Why the token was refused (expired, bad_aud, revoked, …), for audit records. */
+  reason: string;
+  constructor(code: string, message: string, status = 401, reason = code) {
     super(message);
     this.code = code;
     this.status = status;
+    this.reason = reason;
   }
 }
 
@@ -133,6 +137,7 @@ export class Guard {
   private toolDefs = new Map<string, string>();
   private blockedTools = new Set<string>();
   private log: (m: string) => void;
+  private rejectGate = new RateGate(10_000);
 
   constructor(opts: GuardOptions) {
     this.opts = { mode: "enforce", approvalWaitMs: 20_000, ...opts };
@@ -155,6 +160,35 @@ export class Guard {
 
   /** Verifies a bearer token. Throws AuthError (map to HTTP 401/403 + WWW-Authenticate). */
   async verify(token: string | undefined): Promise<VerifiedAuth> {
+    try {
+      return await this.verifyToken(token);
+    } catch (e) {
+      // A missing token is normal discovery (clients probe, then authenticate); a refused one is audited.
+      if (token && e instanceof AuthError) this.recordRejected(token, e);
+      throw e;
+    }
+  }
+
+  private recordRejected(token: string, e: AuthError): void {
+    let c: JwtPayload = {};
+    try { c = decodeJwt(token).payload; } catch { /* not even a JWT */ }
+    const agent = (c.act as { sub?: string } | undefined)?.sub ?? null;
+    const suppressed = this.rejectGate.allow(`${e.reason}|${agent}|${String(c.sub)}`);
+    if (suppressed === null) return;
+    this.append({
+      type: "auth.rejected",
+      details: {
+        code: e.reason,
+        reason: e.message,
+        resource: this.opts.resource,
+        // Taken from a token that failed verification: informative only, never proof of identity.
+        unverified_claims: { iss: c.iss ?? null, sub: c.sub ?? null, agent, jti: c.jti ?? null, exp: c.exp ?? null },
+        suppressed_before: suppressed,
+      },
+    });
+  }
+
+  private async verifyToken(token: string | undefined): Promise<VerifiedAuth> {
     if (!token) throw new AuthError("invalid_token", "Bearer token required");
     let claims: JwtPayload;
     try {
@@ -164,14 +198,14 @@ export class Guard {
         { issuer: this.opts.issuer, audience: this.opts.resource, typ: "at+jwt", requireExp: true },
       );
     } catch (e) {
-      if (e instanceof JwtError) throw new AuthError("invalid_token", e.message);
-      throw new AuthError("invalid_token", `Token verification failed: ${(e as Error).message}`);
+      if (e instanceof JwtError) throw new AuthError("invalid_token", e.message, 401, e.code);
+      throw new AuthError("invalid_token", `Token verification failed: ${(e as Error).message}`, 401, "verification_failed");
     }
     const chain = actorChain(claims);
-    if (!chain.length) throw new AuthError("invalid_token", "Token has no `act` claim: not a delegated agent token");
+    if (!chain.length) throw new AuthError("invalid_token", "Token has no `act` claim: not a delegated agent token", 401, "not_agent_token");
     const m = (claims.mandat ?? {}) as MandatClaim;
     const revoked = this.opts.revocations.check(claims);
-    if (revoked) throw new AuthError("invalid_token", `Token revoked (${revoked.type}: ${revoked.value}${revoked.reason ? ` - ${revoked.reason}` : ""})`);
+    if (revoked) throw new AuthError("invalid_token", `Token revoked (${revoked.type}: ${revoked.value}${revoked.reason ? ` - ${revoked.reason}` : ""})`, 401, "revoked");
     return {
       token,
       claims,

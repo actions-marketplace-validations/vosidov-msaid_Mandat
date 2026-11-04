@@ -30,7 +30,7 @@ export interface Session {
   refresh_token?: string;
   /** ID token expiry (unix seconds). */
   expires_at: number;
-  user: { sub: string; email?: string; name?: string };
+  user: { sub: string; email?: string; email_verified?: boolean; name?: string };
   created_at: string;
 }
 
@@ -89,19 +89,7 @@ export async function login(o: LoginOptions): Promise<Session> {
   const { verifier, challenge } = pkcePair();
   const state = b64url(randomBytes(16));
   const nonce = b64url(randomBytes(16));
-  const url = new URL(meta.authorization_endpoint);
-  const params: Record<string, string> = {
-    response_type: "code",
-    client_id: o.clientId,
-    redirect_uri: redirectUri,
-    scope: (o.scopes ?? ["openid", "profile", "email", "offline_access"]).join(" "),
-    state,
-    nonce,
-    code_challenge: challenge,
-    code_challenge_method: "S256",
-    ...o.extraParams,
-  };
-  for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
+  const url = authorizeUrl(meta, { clientId: o.clientId, redirectUri, state, nonce, challenge, scopes: o.scopes, extraParams: o.extraParams });
 
   const code = await new Promise<string>((resolve, reject) => {
     let server: Server;
@@ -135,14 +123,38 @@ export async function login(o: LoginOptions): Promise<Session> {
     });
   });
 
+  return redeemCode(meta, { clientId: o.clientId, code, verifier, redirectUri, nonce });
+}
+
+export function authorizeUrl(meta: OidcMetadata, p: {
+  clientId: string; redirectUri: string; state: string; nonce: string; challenge: string; scopes?: string[]; extraParams?: Record<string, string>;
+}): URL {
+  const url = new URL(meta.authorization_endpoint);
+  const params: Record<string, string> = {
+    response_type: "code",
+    client_id: p.clientId,
+    redirect_uri: p.redirectUri,
+    scope: (p.scopes ?? ["openid", "profile", "email", "offline_access"]).join(" "),
+    state: p.state,
+    nonce: p.nonce,
+    code_challenge: p.challenge,
+    code_challenge_method: "S256",
+    ...p.extraParams,
+  };
+  for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
+  return url;
+}
+
+/** Exchanges an authorization code (with its PKCE verifier) and returns the verified session. */
+export async function redeemCode(meta: OidcMetadata, p: { clientId: string; code: string; verifier: string; redirectUri: string; nonce: string }): Promise<Session> {
   const tokens = await tokenRequest(meta, {
     grant_type: "authorization_code",
-    code,
-    redirect_uri: redirectUri,
-    client_id: o.clientId,
-    code_verifier: verifier,
+    code: p.code,
+    redirect_uri: p.redirectUri,
+    client_id: p.clientId,
+    code_verifier: p.verifier,
   });
-  return toSession(meta, o.clientId, tokens, nonce);
+  return toSession(meta, p.clientId, tokens, p.nonce);
 }
 
 /** Uses the refresh token to obtain a fresh ID token. */
@@ -179,7 +191,7 @@ async function toSession(meta: OidcMetadata, clientId: string, tokens: { id_toke
     id_token: tokens.id_token,
     refresh_token: tokens.refresh_token,
     expires_at: Number(claims.exp),
-    user: { sub: claims.sub, email: claims.email as string | undefined, name: claims.name as string | undefined },
+    user: { sub: claims.sub, email: claims.email as string | undefined, email_verified: claims.email_verified as boolean | undefined, name: claims.name as string | undefined },
     created_at: new Date().toISOString(),
   };
 }

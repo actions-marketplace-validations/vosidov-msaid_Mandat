@@ -37,7 +37,7 @@ export interface ApprovalRequest {
   expires_at: string;
   decided_at: string | null;
   consumed_at: string | null;
-  votes: Array<{ by: string; decision: "approve" | "deny"; at: string; via: string; comment?: string }>;
+  votes: Array<{ by: string; decision: "approve" | "deny"; at: string; via: string; comment?: string; identities?: string[] }>;
   channels: string[];
   context: ApprovalContext;
 }
@@ -133,14 +133,21 @@ export class ApprovalService {
     return req;
   }
 
-  decide(id: string, vote: { by: string; decision: "approve" | "deny"; via: string; comment?: string }): ApprovalRequest {
+  /**
+   * Records a vote. `identities` are every verified identifier of the approver (IdP sub, e-mail, key id):
+   * all are checked against the requesting principal (no self-approval) and against earlier voters.
+   */
+  decide(id: string, vote: { by: string; decision: "approve" | "deny"; via: string; comment?: string; identities?: string[] }): ApprovalRequest {
     const req = this.get(id);
     if (!req) throw new ApprovalError(404, "Approval request not found");
     if (req.status !== "pending") throw new ApprovalError(409, `Approval is already ${req.status}`);
     if (!vote.by) throw new ApprovalError(400, "Approver identity is required");
-    if (vote.by === req.context.principal.sub || vote.by === req.context.principal.email)
+    const norm = (x: string) => x.toLowerCase();
+    const mine = new Set([vote.by, ...(vote.identities ?? [])].filter(Boolean).map(norm));
+    const requester = [req.context.principal.sub, req.context.principal.email].filter((x): x is string => Boolean(x)).map(norm);
+    if (requester.some((x) => mine.has(x)))
       throw new ApprovalError(403, "Self-approval is not allowed: the requesting principal cannot approve their own agent's action");
-    if (req.votes.some((v) => v.by === vote.by)) throw new ApprovalError(409, `${vote.by} has already voted`);
+    if (req.votes.some((v) => [v.by, ...(v.identities ?? [])].some((x) => mine.has(norm(x))))) throw new ApprovalError(409, `${vote.by} has already voted`);
     const votes = [...req.votes, { ...vote, at: new Date().toISOString() }];
     const approvals = votes.filter((v) => v.decision === "approve").length;
     const status: ApprovalStatus = vote.decision === "deny" ? "denied" : approvals >= req.required ? "approved" : "pending";

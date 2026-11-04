@@ -1,7 +1,7 @@
 // Compliance / DPO evidence report built from the hash chain (US-8).
 // Technical evidence only: qualification of a concrete system remains the operator's responsibility.
 
-import { verifyRecords, type ActionRecord, type VerifyResult } from "./ledger.ts";
+import { REJECTED_AUTH_TYPES, verifyRecords, type ActionRecord, type VerifyResult } from "./ledger.ts";
 
 export interface ReportOptions { from?: string; to?: string; retentionDays?: number; title?: string }
 
@@ -16,11 +16,14 @@ export interface ReportData {
   principals: number;
   approvals: Array<{ id: string; tool: string | null; agent: string | null; principal: string | null; status: string; approvers: string[]; requested_at: string; decided_at: string | null; wait_s: number | null }>;
   denials: Array<{ ts: string; agent: string | null; principal: string | null; tool: string | null; rules: string[]; reasons: string[] }>;
+  rejected_auth: { total: number; by_reason: Array<{ type: string; reason: string; count: number }> };
   admin_events: Array<{ ts: string; type: string; details: unknown }>;
   drift_events: Array<{ ts: string; details: unknown }>;
 }
 
 const AI_ACT_MIN_RETENTION_DAYS = 183; // Art. 19 / 26(6): at least six months
+const ADMIN_TYPES = new Set(["policy.changed", "revocation.created", "revocation.lifted", "agent.registered", "agent.updated",
+  "agent.secret_rotated", "agent.removed", "user.granted", "user.revoked"]);
 
 export function buildReport(all: ActionRecord[], opts: ReportOptions = {}): ReportData {
   const integrity = verifyRecords(all);
@@ -80,8 +83,8 @@ export function buildReport(all: ActionRecord[], opts: ReportOptions = {}): Repo
       ts: c.ts, agent: c.agent?.id ?? null, principal: c.principal?.sub ?? null, tool: c.tool?.name ?? null,
       rules: c.decision?.rules ?? [], reasons: c.decision?.reasons ?? [],
     })),
-    admin_events: recs.filter((r) => r.type.startsWith("policy.") || r.type.startsWith("revocation.") || r.type.startsWith("agent.registered") || r.type === "agent.updated")
-      .map((r) => ({ ts: r.ts, type: r.type, details: r.details })),
+    rejected_auth: rejectedAuth(recs),
+    admin_events: recs.filter((r) => ADMIN_TYPES.has(r.type)).map((r) => ({ ts: r.ts, type: r.type, details: r.details })),
     drift_events: recs.filter((r) => r.type === "tool.drift").map((r) => ({ ts: r.ts, details: r.details })),
   };
 }
@@ -119,12 +122,36 @@ export function reportToMarkdown(d: ReportData, title = "Mandat — AI agent act
     L.push("| Time | Agent | On behalf of | Tool | Rules | Reason |", "|---|---|---|---|---|---|");
     for (const x of d.denials) row(x.ts, x.agent, x.principal, x.tool, x.rules.join(", "), x.reasons.join("; "));
   }
-  L.push("", "## 6. Administrative changes (policies, revocations, agents)", "");
+  L.push("", "## 6. Rejected authentication", "");
+  if (!d.rejected_auth.total) L.push("None.");
+  else {
+    L.push(`${d.rejected_auth.total} rejected attempts (invalid, expired or revoked tokens, failed agent or API logins).`, "", "| Event | Reason | Count |", "|---|---|---|");
+    for (const x of d.rejected_auth.by_reason) row(x.type, x.reason, x.count);
+  }
+  L.push("", "## 7. Administrative changes (policies, revocations, agents, users)", "");
   if (!d.admin_events.length) L.push("None.");
   else for (const e of d.admin_events) L.push(`- ${e.ts} — \`${e.type}\` ${JSON.stringify(e.details)}`);
-  L.push("", "## 7. Tool definition drift", "");
+  L.push("", "## 8. Tool definition drift", "");
   if (!d.drift_events.length) L.push("None detected.");
   else for (const e of d.drift_events) L.push(`- ${e.ts} — ${JSON.stringify(e.details)}`);
   L.push("", "---", "_Technical evidence produced by Mandat. Classification of the AI system under the EU AI Act, GDPR, DORA, SOC 2 or ISO/IEC 42001 is the operator's responsibility._", "");
   return L.join("\n");
+}
+
+/** Counts rejected-authentication records, including attempts folded into a record by rate limiting. */
+function rejectedAuth(recs: ActionRecord[]): ReportData["rejected_auth"] {
+  const counts = new Map<string, { type: string; reason: string; count: number }>();
+  let total = 0;
+  for (const r of recs) {
+    if (!REJECTED_AUTH_TYPES.includes(r.type)) continue;
+    const d = (r.details ?? {}) as { code?: string; error?: string; reason?: string; suppressed_before?: number };
+    const reason = d.code ?? d.error ?? d.reason ?? "unknown";
+    const n = 1 + (d.suppressed_before ?? 0);
+    total += n;
+    const k = `${r.type}|${reason}`;
+    const e = counts.get(k) ?? { type: r.type, reason, count: 0 };
+    e.count += n;
+    counts.set(k, e);
+  }
+  return { total, by_reason: [...counts.values()].sort((a, b) => b.count - a.count) };
 }

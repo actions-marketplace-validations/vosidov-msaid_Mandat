@@ -200,6 +200,45 @@ claude mcp add acme -e MANDAT_AGENT_SECRET=<secret> -- \
 
 Every call is now attributed to the Auth0 user, for example `principal.sub = "auth0|…"`, with their e-mail and `org_id` as tenant. That identity is what policies, approvals and the ledger see. The STS accepts only ID tokens issued by the trusted tenant **to that client ID**, so tokens issued to your other Auth0 apps are rejected.
 
+### Approvers and admins sign in too
+
+People who approve, administer or audit sign in with the same IdP, so every approval and admin change in the ledger names a verified person instead of a shared API key.
+
+1. In the Auth0 application, add the console's callback to **Allowed Callback URLs**: `http://127.0.0.1:7400/auth/callback`. The field is comma-separated; keep the CLI's `http://127.0.0.1:8765/callback`.
+2. Give people roles. Signing in only proves who someone is; what they may do is an explicit grant:
+   ```bash
+   mandat users grant --email you@example.com --roles admin,approver
+   mandat users grant --email colleague@example.com --roles approver
+   mandat users list
+   ```
+3. **Console:** open http://127.0.0.1:7400/console and click **Sign in with your-tenant.auth0.com**. The session is an HttpOnly, SameSite=Strict cookie valid for 8 hours.
+4. **CLI:** add `--login` to act as the person signed in with `mandat login`:
+   ```bash
+   mandat approvals list --login
+   mandat approvals approve apr_… --login
+   ```
+
+Self-approval is checked against all of the approver's verified identifiers (IdP `sub` and e-mail): nobody can approve an action their own agent took on their behalf. Grants match the IdP `sub` first, and the e-mail only when the IdP doesn't mark it unverified. Dev-IdP tokens are never accepted as a person's credential.
+
+### Audit of rejected logins
+
+Refused credentials are written to the ledger, rate-limited to one record per reason and source every 10 seconds, with a count of the suppressed ones:
+
+| Event | Where |
+|---|---|
+| `auth.rejected` | A guard refused a bearer token: invalid, expired, for another server, or revoked. Claims are stored as *unverified*. |
+| `token.denied` | The STS refused a token exchange: wrong agent secret, untrusted user token, or blocked issuance. |
+| `api.auth_rejected` | The control plane refused an API key or ID token, or a signed-in person has no role. |
+
+Filter them in the console (Activity → *rejected logins*) or with `GET /api/ledger?type=@rejected`. The oversight report summarises them in its own section.
+
+### Managing agent secrets
+
+```bash
+mandat agents rotate-secret claude-code --revoke-tokens   # new secret; the old one and its tokens stop working
+mandat agents remove claude-code                          # delete the agent and revoke its outstanding tokens
+```
+
 ---
 
 ## Architecture
@@ -279,7 +318,8 @@ Tooling: `mandat policy check|test|eval` and `mandat bench`. On this machine the
 | **US-3** Argument policies with p99 < 5 ms; approval in Slack with context | ✅ (Slack: Block Kit message + signed interactivity endpoint `/slack/interactions`) |
 | **US-4** Single-task token via RFC 8693 with `sub` = user, `act` = agent, RAR, 5 min | ✅ for Mandat-protected MCP servers · downstream tokens for Stripe/CRM ❌ |
 | **US-5** ID-JAG / Okta XAA | ❌ |
-| Real IdP users (PRD Must: Auth0, Okta, Entra, Keycloak) | ✅ OIDC login with PKCE (`mandat login`), `mandat idp add`, ID-token exchange. Covered by tests against an Auth0-like fake IdP |
+| Real IdP users (PRD Must: Auth0, Okta, Entra, Keycloak) | ✅ OIDC login with PKCE for agents' users (`mandat login`) and for approvers/admins (console sign-in, `--login`), role grants (`mandat users`), ID-token exchange. Tested with a real Auth0 tenant and an Auth0-like fake IdP |
+| Audit of rejected authentication | ✅ `auth.rejected`, `token.denied`, `api.auth_rejected` (rate-limited), report section |
 | **US-6** OCSF event with the delegation chain | ✅ export via `/api/ledger/export`; OTLP push of spans (`ledger.otlp`) · direct SIEM connectors (Splunk HEC and others) ❌ |
 | **US-7** Revocation by agent, version, user, task, tenant or token in ≤ 10 s | ✅ < 1 s in tests; issuance blocked until lifted |
 | **US-8** DPO report from the hash chain, retention check | ✅ `mandat ledger report`, console |
@@ -291,7 +331,8 @@ Tooling: `mandat policy check|test|eval` and `mandat bench`. On this machine the
 ## Security notes and known limitations
 
 - **Dev IdP.** `devIdp: true` (the `mandat init` default) lets anyone mint user tokens on `/dev/login`. Disable it with `mandat idp add … --disable-dev-idp` before any real use.
-- **Approver identity.** Approvers still authenticate with API keys (console/CLI) or Slack, not through the IdP, so self-approval is only detected when the approver id matches the user's `sub` or e-mail.
+- **Approver identity.** Console and CLI approvers can sign in with the IdP. API keys still work for automation, and Slack approvers are recorded as `slack:<username>`, which isn't yet mapped to an IdP identity.
+- **Console sessions** are kept in memory: restarting `mandat serve` signs everyone out.
 - **Storage.** The control plane keeps state in JSON files under `dataDir` (single process, no HA). The `JsonCollection` interface is the seam for a database.
 - **Ledger.** The ledger is tamper-*evident*, not tamper-*proof*: someone with write access could rewrite the whole chain. For that threat, anchor the head hash externally (WORM storage, a transparency log, or an eIDAS timestamp; see open question 8). Records are ordered by `seq`, which is arrival order; `ts` is event time.
 - **Auth failures** (bad or revoked token → `401`) are returned to the caller but not yet written to the ledger.
@@ -302,7 +343,7 @@ Tooling: `mandat policy check|test|eval` and `mandat bench`. On this machine the
 ## Development
 
 ```bash
-npm test            # 46 tests: expression language, PDP, STS, guard, approvals, ledger, scanner, OIDC, end-to-end over HTTP
+npm test            # 54 tests: expression language, PDP, STS, guard, approvals, ledger, scanner, OIDC, human sign-in, end-to-end over HTTP
 npm run typecheck   # tsc --strict (dev dependency only)
 npm run build       # dist/ (plain JS + .d.ts) for the npm package; Node >= 20
 npm run demo

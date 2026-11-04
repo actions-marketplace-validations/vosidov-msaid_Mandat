@@ -25,6 +25,8 @@ export interface ControlPlaneConfig {
   tokenTtlSeconds?: number;
   maxTokenTtlSeconds?: number;
   trustedIssuers?: TrustedIssuer[];
+  /** IdP for console sign-in. Default: the first trusted issuer (its audience is the client id). */
+  consoleLogin?: { issuer: string; client_id: string };
   apiKeys: ApiKeyEntry[];
   approvals?: {
     defaultTimeout?: string;

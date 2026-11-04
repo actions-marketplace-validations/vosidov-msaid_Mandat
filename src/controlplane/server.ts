@@ -5,7 +5,8 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { ControlPlaneConfig, ApiKeyEntry, Role } from "./config.ts";
+import type { ControlPlaneConfig, Role } from "./config.ts";
+import { HUMAN_ROLES, HumanAuth, type HumanUser, type Principal } from "./humans.ts";
 import { hashApiKey } from "./config.ts";
 import { Sts, OAuthError, hashSecret, GRANT_TOKEN_EXCHANGE, type AgentRecord } from "../sts/sts.ts";
 import { loadOrCreateSigningKey, type SigningKey } from "../sts/jwt.ts";
@@ -16,7 +17,7 @@ import { OtlpExporter, toOcsf, toOtelSpan } from "../ledger/export.ts";
 import { buildReport, reportToMarkdown } from "../ledger/report.ts";
 import { ApprovalError, ApprovalService, ConsoleLogNotifier, SlackNotifier, WebhookNotifier, handleSlackInteraction, verifySlackSignature, type NewApproval, type Notifier } from "../approvals/approvals.ts";
 import { compilePolicy, PolicyError, type PolicyDocument } from "../policy/engine.ts";
-import { HttpError, readBody, readJson, randomId, safeEqual, sendJson, writeJsonAtomic, parseDuration, nowSeconds } from "../util.ts";
+import { HttpError, RateGate, readBody, readJson, randomId, safeEqual, sendJson, writeJsonAtomic, parseDuration, nowSeconds } from "../util.ts";
 
 export interface ControlPlane {
   server: Server;
@@ -80,15 +81,68 @@ export function createControlPlane(config: ControlPlaneConfig): ControlPlane {
   });
 
   const keys = config.apiKeys;
-  const authenticate = (req: IncomingMessage, roles: Role[]): ApiKeyEntry => {
+  const loginCfg = config.consoleLogin
+    ? { issuer: config.consoleLogin.issuer, clientId: config.consoleLogin.client_id }
+    : (() => {
+        const ti = (config.trustedIssuers ?? [])[0];
+        const aud = Array.isArray(ti?.audience) ? ti.audience[0] : ti?.audience;
+        return ti && aud ? { issuer: ti.issuer, clientId: aud } : null;
+      })();
+  const humans = new HumanAuth({ dataDir: config.dataDir, publicUrl: issuer, login: loginCfg });
+
+  // Failed logins are audited, rate-limited per reason and source so a flood cannot flood the ledger.
+  const rejectGate = new RateGate(10_000);
+  const recordRejected = (type: "api.auth_rejected" | "token.denied", key: string, details: Record<string, unknown>) => {
+    const suppressed = rejectGate.allow(`${type}|${key}`);
+    if (suppressed !== null) ledger.append({ type, source: "control-plane", details: { ...details, suppressed_before: suppressed } });
+  };
+  const ipOf = (req: IncomingMessage) => req.socket.remoteAddress ?? "unknown";
+
+  const withRejectAudit = (req: IncomingMessage, fn: () => Principal): Principal => {
+    try {
+      return fn();
+    } catch (e) {
+      if (e instanceof HttpError && e.code === "no_role")
+        recordRejected("api.auth_rejected", `no_role|${e.message}`, { code: "no_role", reason: e.message, path: req.url, ip: ipOf(req) });
+      throw e;
+    }
+  };
+
+  /** Resolves the caller: console session cookie, IdP ID token (CLI `--login`), or API key. */
+  const identify = async (req: IncomingMessage): Promise<Principal> => {
+    const session = humans.session(req.headers.cookie);
+    if (session) {
+      // Cookies are sent automatically; require a header that cross-site forms cannot set.
+      if (req.method !== "GET" && req.method !== "HEAD" && req.headers["x-requested-with"] !== "mandat")
+        throw new HttpError(403, "csrf", "Missing X-Requested-With: mandat header");
+      return withRejectAudit(req, () => humans.principal(session.sub, session.email, session.email_verified, "session"));
+    }
     const h = req.headers.authorization;
     const token = h?.startsWith("Bearer ") ? h.slice(7).trim() : undefined;
-    if (!token) throw new HttpError(401, "unauthorized", "API key required", { "www-authenticate": 'Bearer realm="mandat"' });
+    if (!token) throw new HttpError(401, "unauthorized", "Sign in or provide an API key", { "www-authenticate": 'Bearer realm="mandat"' });
+    if (token.split(".").length === 3) {
+      let u;
+      try {
+        u = await sts.verifyIdpToken(token);
+      } catch (e) {
+        recordRejected("api.auth_rejected", `invalid_id_token|${ipOf(req)}`, { code: "invalid_id_token", reason: (e as Error).message, path: req.url, ip: ipOf(req) });
+        throw new HttpError(401, "unauthorized", `ID token rejected: ${(e as Error).message}`);
+      }
+      return withRejectAudit(req, () => humans.principal(u.sub, u.email, u.email_verified, "id_token"));
+    }
     const hash = hashApiKey(token);
     const k = keys.find((x) => safeEqual(x.hash, hash));
-    if (!k) throw new HttpError(401, "unauthorized", "Invalid API key");
-    if (!k.roles.some((r) => roles.includes(r))) throw new HttpError(403, "forbidden", `Requires role: ${roles.join(" or ")}`);
-    return k;
+    if (!k) {
+      recordRejected("api.auth_rejected", `invalid_api_key|${ipOf(req)}`, { code: "invalid_api_key", reason: "Unknown API key", path: req.url, ip: ipOf(req) });
+      throw new HttpError(401, "unauthorized", "Invalid API key");
+    }
+    return { id: k.id, roles: k.roles, via: "api_key" };
+  };
+
+  const authenticate = async (req: IncomingMessage, roles: Role[]): Promise<Principal> => {
+    const p = await identify(req);
+    if (!p.roles.some((r) => roles.includes(r))) throw new HttpError(403, "forbidden", `Requires role: ${roles.join(" or ")}`);
+    return p;
   };
 
   const adminEvent = (type: RecordInput["type"], by: string, details: Record<string, unknown>) =>
@@ -150,7 +204,10 @@ export function createControlPlane(config: ControlPlaneConfig): ControlPlane {
       try {
         return sendJson(res, 200, await sts.exchange(form, { id, secret }), { pragma: "no-cache" });
       } catch (e) {
-        if (e instanceof OAuthError) return sendJson(res, e.status, { error: e.error, error_description: e.message }, e.status === 401 ? { "www-authenticate": 'Basic realm="mandat"' } : {});
+        if (e instanceof OAuthError) {
+          recordRejected("token.denied", `${e.error}|${id ?? "-"}`, { code: e.error, reason: e.message, client_id: id ?? null, ip: ipOf(req) });
+          return sendJson(res, e.status, { error: e.error, error_description: e.message }, e.status === 401 ? { "www-authenticate": 'Basic realm="mandat"' } : {});
+        }
         throw e;
       }
     }
@@ -170,21 +227,48 @@ export function createControlPlane(config: ControlPlaneConfig): ControlPlane {
       return sendJson(res, 200, handleSlackInteraction(approvals, raw, consoleUrl));
     }
 
+    // ----- human sign-in (console) -----
+    if (m === "GET" && p === "/auth/config") return sendJson(res, 200, { enabled: humans.loginEnabled, issuer: humans.loginIssuer });
+    if (m === "GET" && p === "/auth/login") {
+      res.writeHead(302, { location: await humans.startLogin(), "cache-control": "no-store" }).end();
+      return;
+    }
+    if (m === "GET" && p === "/auth/callback") {
+      const page = (title: string, msg: string, extraHead = "") =>
+        `<!doctype html><meta charset="utf-8">${extraHead}<title>${title}</title><body style="font:16px system-ui;margin:3rem"><h2>${title}</h2><p>${msg}</p><p><a href="/console">Back to the console</a></p></body>`;
+      try {
+        const { sessionId } = await humans.finishLogin(url.searchParams);
+        // An HTML hop (not a 302) makes the console load a same-site navigation, so the Strict cookie applies.
+        res.writeHead(200, { "content-type": "text/html; charset=utf-8", "set-cookie": humans.sessionCookie(sessionId), "cache-control": "no-store" });
+        res.end(page("Signed in", "Opening the console...", '<meta http-equiv="refresh" content="0;url=/console">'));
+      } catch (e) {
+        const msg = (e as Error).message.replace(/[<>&"]/g, "");
+        res.writeHead(400, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
+        res.end(page("Sign-in failed", msg));
+      }
+      return;
+    }
+    if (m === "POST" && p === "/auth/logout") {
+      humans.logout(req.headers.cookie);
+      res.writeHead(204, { "set-cookie": humans.sessionCookie(null) }).end();
+      return;
+    }
+
     if (!p.startsWith("/api/")) throw new HttpError(404, "not_found", "Not found");
 
     // ----- API -----
     if (m === "GET" && p === "/api/whoami") {
-      const k = authenticate(req, ["admin", "approver", "auditor", "service"]);
-      return sendJson(res, 200, { id: k.id, roles: k.roles, issuer });
+      const k = await authenticate(req, ["admin", "approver", "auditor", "service"]);
+      return sendJson(res, 200, { id: k.id, roles: k.roles, via: k.via, email: k.email ?? null, sub: k.sub ?? null, issuer });
     }
 
     if (p === "/api/revocations") {
       if (m === "GET") {
-        authenticate(req, ["service", "admin", "auditor"]);
+        await authenticate(req, ["service", "admin", "auditor"]);
         return sendJson(res, 200, { revocations: revocations.all(), now: nowSeconds() });
       }
       if (m === "POST") {
-        const k = authenticate(req, ["admin"]);
+        const k = await authenticate(req, ["admin"]);
         const b = await json<{ type?: RevocationType; value?: string; version?: string; reason?: string; block_issuance?: boolean }>();
         if (!b.type || !REVOCATION_TYPES.includes(b.type)) throw new HttpError(400, "invalid_request", `type must be one of ${REVOCATION_TYPES.join(", ")}`);
         if (!b.value) throw new HttpError(400, "invalid_request", "value is required");
@@ -201,7 +285,7 @@ export function createControlPlane(config: ControlPlaneConfig): ControlPlane {
     }
     const revMatch = /^\/api\/revocations\/([\w-]+)$/.exec(p);
     if (revMatch && m === "DELETE") {
-      const k = authenticate(req, ["admin"]);
+      const k = await authenticate(req, ["admin"]);
       const r = revocations.update(revMatch[1]!, (x) => ({ ...x, blocks_issuance: false }));
       if (!r) throw new HttpError(404, "not_found", "Revocation not found");
       adminEvent("revocation.lifted", k.id, { id: r.id, type: r.type, value: r.value, note: "New tokens may be issued; tokens issued before the revocation stay invalid." });
@@ -210,13 +294,13 @@ export function createControlPlane(config: ControlPlaneConfig): ControlPlane {
 
     if (p === "/api/policy") {
       if (m === "GET") {
-        authenticate(req, ["service", "admin", "auditor"]);
+        await authenticate(req, ["service", "admin", "auditor"]);
         const etag = `"${policy.version}"`;
         if (req.headers["if-none-match"] === etag) { res.writeHead(304, { etag }).end(); return; }
         return sendJson(res, 200, { version: policy.version, policy: policyDoc }, { etag });
       }
       if (m === "PUT") {
-        const k = authenticate(req, ["admin"]);
+        const k = await authenticate(req, ["admin"]);
         const b = await json<{ policy?: PolicyDocument; comment?: string }>();
         let next;
         try { next = compilePolicy(b.policy as PolicyDocument); } catch (e) {
@@ -240,7 +324,7 @@ export function createControlPlane(config: ControlPlaneConfig): ControlPlane {
 
     if (p === "/api/agents") {
       if (m === "GET") {
-        authenticate(req, ["admin", "auditor", "approver"]);
+        await authenticate(req, ["admin", "auditor", "approver"]);
         const revs = revocations.all();
         return sendJson(res, 200, {
           agents: agents.all().map(({ secret_hash: _s, ...a }) => ({
@@ -250,7 +334,7 @@ export function createControlPlane(config: ControlPlaneConfig): ControlPlane {
         });
       }
       if (m === "POST") {
-        const k = authenticate(req, ["admin"]);
+        const k = await authenticate(req, ["admin"]);
         const b = await json<Partial<AgentRecord>>();
         if (!b.id || !/^[a-z0-9][a-z0-9._-]{1,62}$/.test(b.id)) throw new HttpError(400, "invalid_request", "id must match ^[a-z0-9][a-z0-9._-]{1,62}$");
         if (agents.get(b.id)) throw new HttpError(409, "conflict", "Agent already exists");
@@ -269,7 +353,7 @@ export function createControlPlane(config: ControlPlaneConfig): ControlPlane {
     }
     const agentMatch = /^\/api\/agents\/([\w.-]+)$/.exec(p);
     if (agentMatch && m === "PATCH") {
-      const k = authenticate(req, ["admin"]);
+      const k = await authenticate(req, ["admin"]);
       const b = await json<Partial<AgentRecord>>();
       const allowed: Array<keyof AgentRecord> = ["name", "allowed_tools", "allowed_resources", "versions", "max_ttl_seconds", "disabled"];
       const patch = Object.fromEntries(Object.entries(b).filter(([kk]) => allowed.includes(kk as keyof AgentRecord)));
@@ -280,16 +364,72 @@ export function createControlPlane(config: ControlPlaneConfig): ControlPlane {
       return sendJson(res, 200, pub);
     }
 
+    const rotateMatch = /^\/api\/agents\/([\w.-]+)\/rotate-secret$/.exec(p);
+    if (rotateMatch && m === "POST") {
+      const k = await authenticate(req, ["admin"]);
+      const b = await json<{ revoke_tokens?: boolean }>();
+      const secret = `mdt_as_${randomId("", 24)}`;
+      const r = agents.update(rotateMatch[1]!, (a) => ({ ...a, secret_hash: hashSecret(secret) }));
+      if (!r) throw new HttpError(404, "not_found", "Agent not found");
+      if (b.revoke_tokens) {
+        // Invalidate tokens minted with the old secret, but let the new secret mint new ones.
+        revocations.put({ id: randomId("rev_", 8), type: "agent", value: r.id, issued_before: nowSeconds(), blocks_issuance: false, created_at: new Date().toISOString(), reason: "secret rotated", by: k.id });
+      }
+      adminEvent("agent.secret_rotated", k.id, { agent: r.id, revoked_existing_tokens: Boolean(b.revoke_tokens) });
+      return sendJson(res, 200, { id: r.id, client_secret: secret, note: "Store the client_secret now; it is not shown again. The old secret no longer works." });
+    }
+    if (agentMatch && m === "DELETE") {
+      const k = await authenticate(req, ["admin"]);
+      const id = agentMatch[1]!;
+      if (!agents.delete(id)) throw new HttpError(404, "not_found", "Agent not found");
+      // Outstanding tokens die with the agent; a new agent with the same id needs the block lifted explicitly.
+      revocations.put({ id: randomId("rev_", 8), type: "agent", value: id, issued_before: nowSeconds(), blocks_issuance: true, created_at: new Date().toISOString(), reason: "agent removed", by: k.id });
+      adminEvent("agent.removed", k.id, { agent: id });
+      return sendJson(res, 200, { removed: id });
+    }
+
+    if (p === "/api/users") {
+      if (m === "GET") {
+        await authenticate(req, ["admin", "auditor"]);
+        return sendJson(res, 200, { users: humans.users.all(), login: { enabled: humans.loginEnabled, issuer: humans.loginIssuer } });
+      }
+      if (m === "POST") {
+        const k = await authenticate(req, ["admin"]);
+        const b = await json<{ email?: string; sub?: string; roles?: Role[] }>();
+        if (!b.email && !b.sub) throw new HttpError(400, "invalid_request", "email or sub is required");
+        const roles = b.roles ?? [];
+        if (!roles.length || roles.some((r) => !HUMAN_ROLES.includes(r)))
+          throw new HttpError(400, "invalid_request", `roles must be a non-empty subset of ${HUMAN_ROLES.join(", ")} (the service role is for machines: use an API key)`);
+        const email = b.email?.trim().toLowerCase();
+        const id = email ?? b.sub!;
+        const user: HumanUser = { id, email, sub: b.sub, roles: [...new Set(roles)], created_at: humans.users.get(id)?.created_at ?? new Date().toISOString(), by: k.id };
+        humans.users.put(user);
+        adminEvent("user.granted", k.id, { user: id, roles: user.roles });
+        return sendJson(res, 200, user);
+      }
+    }
+    const userMatch = /^\/api\/users\/([^/]+)$/.exec(p);
+    if (userMatch && m === "DELETE") {
+      const k = await authenticate(req, ["admin"]);
+      const raw = decodeURIComponent(userMatch[1]!);
+      const target = humans.users.get(raw.toLowerCase()) ?? humans.users.all().find((u) => u.sub === raw);
+      if (!target) throw new HttpError(404, "not_found", "User not found");
+      if (target.id === k.id) throw new HttpError(409, "conflict", "You cannot remove your own access");
+      humans.users.delete(target.id);
+      adminEvent("user.revoked", k.id, { user: target.id, roles: target.roles });
+      return sendJson(res, 200, { removed: target.id });
+    }
+
     if (p === "/api/approvals") {
       if (m === "POST") {
-        authenticate(req, ["service"]);
+        await authenticate(req, ["service"]);
         const b = await json<NewApproval>();
         if (!b.binding || !b.context?.tool || !b.context?.principal?.sub) throw new HttpError(400, "invalid_request", "binding and context are required");
         const timeoutMs = Math.min(b.timeoutMs ?? parseDuration(config.approvals?.defaultTimeout ?? "10m"), 24 * 3_600_000);
         return sendJson(res, 201, await approvals.create({ ...b, timeoutMs, required: b.required ?? 1, channels: b.channels ?? [] }));
       }
       if (m === "GET") {
-        authenticate(req, ["approver", "admin", "auditor", "service"]);
+        await authenticate(req, ["approver", "admin", "auditor", "service"]);
         const status = url.searchParams.get("status") as never;
         return sendJson(res, 200, { approvals: approvals.list(status || undefined).slice(0, 200) });
       }
@@ -298,25 +438,27 @@ export function createControlPlane(config: ControlPlaneConfig): ControlPlane {
     if (apr) {
       const [, id, action] = apr;
       if (!action && m === "GET") {
-        authenticate(req, ["approver", "admin", "auditor", "service"]);
+        await authenticate(req, ["approver", "admin", "auditor", "service"]);
         const wait = Math.min(Number(url.searchParams.get("wait") ?? 0) || 0, 30_000);
         const r = wait ? await approvals.wait(id!, wait) : approvals.get(id!);
         if (!r) throw new HttpError(404, "not_found", "Approval not found");
         return sendJson(res, 200, r);
       }
       if ((action === "approve" || action === "deny") && m === "POST") {
-        const k = authenticate(req, ["approver", "admin"]);
+        const k = await authenticate(req, ["approver", "admin"]);
         const b = await json<{ comment?: string }>();
-        return sendJson(res, 200, approvals.decide(id!, { by: k.id, decision: action, via: "api", comment: b.comment }));
+        const via = k.via === "session" ? "console" : k.via === "id_token" ? "cli" : "api-key";
+        const identities = [...new Set([k.id, k.sub, k.email].filter((x): x is string => Boolean(x)))];
+        return sendJson(res, 200, approvals.decide(id!, { by: k.id, decision: action, via, comment: b.comment, identities }));
       }
       if (action === "consume" && m === "POST") {
-        authenticate(req, ["service"]);
+        await authenticate(req, ["service"]);
         return sendJson(res, 200, { consumed: approvals.consume(id!) });
       }
     }
 
     if (m === "POST" && p === "/api/ledger/ingest") {
-      const k = authenticate(req, ["service"]);
+      const k = await authenticate(req, ["service"]);
       const b = await json<{ records?: RecordInput[] }>();
       if (!Array.isArray(b.records) || b.records.length > 1000) throw new HttpError(400, "invalid_request", "records: array of <= 1000");
       let appended = 0;
@@ -329,17 +471,17 @@ export function createControlPlane(config: ControlPlaneConfig): ControlPlane {
       return sendJson(res, 200, { appended, head: ledger.headHash });
     }
     if (m === "GET" && p === "/api/ledger") {
-      authenticate(req, ["auditor", "admin", "approver"]);
+      await authenticate(req, ["auditor", "admin", "approver"]);
       const q: LedgerQuery = Object.fromEntries(url.searchParams) as LedgerQuery;
       q.limit = Math.min(Number(url.searchParams.get("limit") ?? 100) || 100, 1000);
       return sendJson(res, 200, { records: queryRecords(ledger.read(), q), head: ledger.headHash, count: ledger.length });
     }
     if (m === "GET" && p === "/api/ledger/verify") {
-      authenticate(req, ["auditor", "admin"]);
+      await authenticate(req, ["auditor", "admin"]);
       return sendJson(res, 200, verifyLedger(ledger.path));
     }
     if (m === "GET" && p === "/api/ledger/export") {
-      authenticate(req, ["auditor", "admin"]);
+      await authenticate(req, ["auditor", "admin"]);
       const fmt = url.searchParams.get("format") ?? "ocsf";
       const recs = queryRecords(ledger.read(), { ...Object.fromEntries(url.searchParams), order: "asc" } as LedgerQuery);
       const map = fmt === "otel" ? toOtelSpan : fmt === "raw" ? (r: ActionRecord) => r : toOcsf;
@@ -348,7 +490,7 @@ export function createControlPlane(config: ControlPlaneConfig): ControlPlane {
       return;
     }
     if (m === "GET" && p === "/api/report") {
-      authenticate(req, ["auditor", "admin"]);
+      await authenticate(req, ["auditor", "admin"]);
       const data = buildReport(ledger.read(), { from: url.searchParams.get("from") ?? undefined, to: url.searchParams.get("to") ?? undefined, retentionDays: config.ledger?.retentionDays });
       if (url.searchParams.get("format") === "json") return sendJson(res, 200, data);
       res.writeHead(200, { "content-type": "text/markdown; charset=utf-8" });
@@ -356,7 +498,7 @@ export function createControlPlane(config: ControlPlaneConfig): ControlPlane {
       return;
     }
     if (m === "GET" && p === "/api/stats") {
-      authenticate(req, ["auditor", "admin", "approver"]);
+      await authenticate(req, ["auditor", "admin", "approver"]);
       const recs = ledger.read();
       const since = new Date(Date.now() - 24 * 3_600_000).toISOString();
       const calls = recs.filter((r) => r.type === "agent.tool_call" && r.ts >= since);

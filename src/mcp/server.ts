@@ -155,7 +155,11 @@ export class McpHttpServer {
   /** Binds to loopback by default; pass host "0.0.0.0" only behind a TLS-terminating proxy. */
   listen(port: number, host = "127.0.0.1"): Promise<Server> {
     this.server = createServer(this.handler);
-    return new Promise((resolve) => this.server!.listen(port, host, () => resolve(this.server!)));
+    return new Promise((resolve, reject) => {
+      this.server!.once("error", (e: NodeJS.ErrnoException) =>
+        reject(e.code === "EADDRINUSE" ? new Error(`Port ${port} is already in use. Set MCP_PORT or pass another port.`) : e));
+      this.server!.listen(port, host, () => resolve(this.server!));
+    });
   }
 
   close(): Promise<void> {

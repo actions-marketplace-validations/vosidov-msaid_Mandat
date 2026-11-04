@@ -22,7 +22,20 @@ export type RecordType =
   | "policy.changed"
   | "tool.drift"
   | "agent.registered"
-  | "agent.updated";
+  | "agent.updated"
+  | "agent.secret_rotated"
+  | "agent.removed"
+  | "user.granted"
+  | "user.revoked"
+  /** A guard refused a bearer token (invalid, expired, wrong audience, revoked). */
+  | "auth.rejected"
+  /** The STS refused a token exchange (bad agent secret, untrusted user token, blocked issuance). */
+  | "token.denied"
+  /** The control plane API refused credentials. */
+  | "api.auth_rejected";
+
+/** Record types counted as rejected authentication; `type=@rejected` in queries selects all of them. */
+export const REJECTED_AUTH_TYPES: RecordType[] = ["auth.rejected", "token.denied", "api.auth_rejected"];
 
 export interface ActionRecord {
   id: string;
@@ -185,7 +198,8 @@ export interface LedgerQuery {
 
 export function queryRecords(records: ActionRecord[], q: LedgerQuery): ActionRecord[] {
   let out = records.filter((r) =>
-    (!q.type || r.type === q.type || (q.type.endsWith("*") && r.type.startsWith(q.type.slice(0, -1)))) &&
+    (!q.type || r.type === q.type || (q.type === "@rejected" && REJECTED_AUTH_TYPES.includes(r.type)) ||
+      (q.type.endsWith("*") && r.type.startsWith(q.type.slice(0, -1)))) &&
     (!q.agent || r.agent?.id === q.agent || r.actor_chain?.includes(q.agent)) &&
     (!q.sub || r.principal?.sub === q.sub) &&
     (!q.tool || r.tool?.name === q.tool) &&

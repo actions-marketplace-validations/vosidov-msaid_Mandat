@@ -91,3 +91,9 @@ tr.click:hover td { background: var(--chip); }
 .mt { margin-top: 16px; }
 .mb { margin-bottom: 8px; }
 .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+
+a.button { display: inline-block; text-decoration: none; border: 1px solid var(--line); border-radius: 6px; padding: 6px 12px; color: inherit; }
+a.button.primary { background: var(--accent); color: var(--panel); border-color: var(--accent); }
+[hidden] { display: none !important; }
+
+[OK] Command outcome recorded

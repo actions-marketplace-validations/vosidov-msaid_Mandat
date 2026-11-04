@@ -17,8 +17,10 @@
       </div>
     </div>
     <form id="login" class="login" autocomplete="off">
+      <a id="sso" class="button primary" href="/auth/login" hidden>Sign in</a>
       <input id="apikey" type="password" placeholder="API key (mdt_…)" aria-label="API key">
       <button type="submit">Connect</button>
+      <button id="logout" type="button" hidden>Sign out</button>
       <span id="who" class="who"></span>
     </form>
   </header>
@@ -49,6 +51,8 @@
           <option value="revocation.*">revocations</option>
           <option value="policy.changed">policy changes</option>
           <option value="tool.drift">tool drift</option>
+          <option value="@rejected">rejected logins</option>
+          <option value="user.*">user access changes</option>
         </select>
         <select id="f-effect">
           <option value="">any decision</option>

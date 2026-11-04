@@ -141,3 +141,26 @@ export function bearerToken(req: IncomingMessage): string | undefined {
 export function nowSeconds(): number {
   return Math.floor(Date.now() / 1000);
 }
+
+/**
+ * Lets one event per key through per window and counts the rest, so a flood of failed logins
+ * produces a few audit records ("… and 41 more") instead of thousands.
+ */
+export class RateGate {
+  private seen = new Map<string, { at: number; suppressed: number }>();
+  private windowMs: number;
+
+  constructor(windowMs = 10_000) {
+    this.windowMs = windowMs;
+  }
+
+  /** Returns null when suppressed, otherwise how many events were suppressed for this key since the last one. */
+  allow(key: string): number | null {
+    const now = Date.now();
+    const e = this.seen.get(key);
+    if (e && now - e.at < this.windowMs) { e.suppressed++; return null; }
+    if (this.seen.size > 10_000) this.seen.clear();
+    this.seen.set(key, { at: now, suppressed: 0 });
+    return e?.suppressed ?? 0;
+  }
+}

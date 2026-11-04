@@ -21,7 +21,7 @@ import { clearSession, currentIdToken, discover, loadSession, login, openSystemB
 import { readJson, writeJsonAtomic } from "../util.ts";
 import { VERSION } from "../version.ts";
 
-const BOOLEANS = ["version", "login", "no-browser", "disable-dev-idp", "active", "check", "force", "json", "tainted", "help", "h", "follow", "frozen", "no-color", "shadow"];
+const BOOLEANS = ["version", "login", "revoke-tokens", "no-browser", "disable-dev-idp", "active", "check", "force", "json", "tainted", "help", "h", "follow", "frozen", "no-color", "shadow"];
 
 const HELP = `mandat ${VERSION} — authorization, delegation and audit for AI agent actions
 
@@ -43,9 +43,12 @@ Policy
   mandat policy eval [policy] --tool T --args JSON [--agent A] [--tainted]
   mandat bench [policy]                         PDP latency (p50/p99)
 
-Agents, approvals, revocation  (talk to the control plane: --url, --key or MANDAT_URL / MANDAT_API_KEY)
+Agents, approvals, revocation  (talk to the control plane: --url, --key or MANDAT_URL / MANDAT_API_KEY,
+                               or --login to act as the person signed in with "mandat login")
   mandat agents list
   mandat agents add <id> --tools a,b [--resources URL,...] [--versions 1.0.0,...] [--name N]
+  mandat agents rotate-secret <id> [--revoke-tokens]   New client secret (old one stops working)
+  mandat agents remove <id>                            Delete the agent and revoke its tokens
   mandat approvals list [--status pending]
   mandat approvals approve|deny <id> [--comment C]
   mandat revoke --agent ID [--version V] | --user SUB | --task ID | --tenant T | --jti ID  [--reason R]
@@ -56,6 +59,9 @@ Real users (OIDC: Auth0, Okta, Entra ID, Keycloak)
   mandat idp list
   mandat login --issuer URL --client-id ID [--port 8765] [--organization ORG] [--no-browser]   Browser login (PKCE)
   mandat login status | mandat logout
+  mandat users list
+  mandat users grant --email E | --sub SUB --roles approver[,admin,auditor]   Give a signed-in person a role
+  mandat users revoke <email-or-sub>
 
 Connect real agents (Claude Code, Codex, Cursor, Claude Desktop)
   mandat bridge --url MCP_URL --agent ID [--mandat URL] [--login | --user SUB] [--version V] [--tools a,b]
@@ -92,6 +98,7 @@ export async function main(argv: string[]): Promise<number> {
     case "login": return loginCmd(args);
     case "logout": console.log(clearSession() ? "✓ Logged out" : "Not logged in."); return 0;
     case "idp": return idpCmd(sub, args);
+    case "users": return usersCmd(sub, args);
     default:
       console.error(`Unknown command '${cmd}'. Run \`mandat --help\`.`);
       return 2;
@@ -383,7 +390,7 @@ function cpTarget(args: Args, role: "admin" | "approver" | "service" = "admin"):
 }
 
 async function cp<T = any>(args: Args, method: string, path: string, body?: unknown, role?: "admin" | "approver"): Promise<T> {
-  const t = cpTarget(args, role);
+  const t = args.bool("login") ? await loginTarget(args) : cpTarget(args, role);
   const res = await fetch(t.url + path, {
     method,
     headers: { authorization: `Bearer ${t.key}`, ...(body ? { "content-type": "application/json" } : {}) },
@@ -394,12 +401,34 @@ async function cp<T = any>(args: Args, method: string, path: string, body?: unkn
   return data as T;
 }
 
+/** `--login`: act as the person signed in with `mandat login` (their IdP ID token is the credential). */
+async function loginTarget(args: Args): Promise<{ url: string; key: string }> {
+  let url = args.str("url") ?? process.env.MANDAT_URL;
+  if (!url && existsSync(".mandat/credentials.json")) url = readJson<{ url: string }>(".mandat/credentials.json").url;
+  if (!url) throw new Error("Control plane URL missing: pass --url or set MANDAT_URL.");
+  return { url: url.replace(/\/$/, ""), key: await currentIdToken() };
+}
+
 async function agentsCmd(sub: string | undefined, args: Args): Promise<number> {
   try {
     if (!sub || sub === "list") {
       const { agents } = await cp(args, "GET", "/api/agents");
       if (!agents.length) console.log("No agents registered.");
       for (const a of agents) console.log(`${a.revoked ? "⛔" : "●"} ${a.id.padEnd(20)} tools: ${a.allowed_tools.join(", ")}  resources: ${a.allowed_resources?.join(", ") || "any"}  versions: ${a.versions?.join(", ") || "any"}`);
+      return 0;
+    }
+    if (sub === "rotate-secret") {
+      const id = args._[2];
+      if (!id) { console.error("Usage: mandat agents rotate-secret <id> [--revoke-tokens]"); return 2; }
+      const r = await cp(args, "POST", `/api/agents/${encodeURIComponent(id)}/rotate-secret`, { revoke_tokens: args.bool("revoke-tokens") });
+      console.log(`✓ New secret for ${r.id}\n  client_secret  ${r.client_secret}\n  (store it now; the old secret no longer works${args.bool("revoke-tokens") ? " and its tokens are revoked" : ""})`);
+      return 0;
+    }
+    if (sub === "remove") {
+      const id = args._[2];
+      if (!id) { console.error("Usage: mandat agents remove <id>"); return 2; }
+      await cp(args, "DELETE", `/api/agents/${encodeURIComponent(id)}`);
+      console.log(`✓ Removed agent ${id}; its outstanding tokens are revoked.`);
       return 0;
     }
     if (sub === "add") {
@@ -410,7 +439,7 @@ async function agentsCmd(sub: string | undefined, args: Args): Promise<number> {
       return 0;
     }
   } catch (e) { console.error((e as Error).message); return 1; }
-  console.error("Usage: mandat agents list|add");
+  console.error("Usage: mandat agents list|add|rotate-secret|remove");
   return 2;
 }
 
@@ -561,5 +590,33 @@ async function idpCmd(sub: string | undefined, args: Args): Promise<number> {
     return 0;
   }
   console.error("Usage: mandat idp add|list");
+  return 2;
+}
+
+async function usersCmd(sub: string | undefined, args: Args): Promise<number> {
+  try {
+    if (!sub || sub === "list") {
+      const r = await cp(args, "GET", "/api/users");
+      console.log(`Console sign-in: ${r.login.enabled ? `enabled (${r.login.issuer})` : "disabled (run mandat idp add)"}`);
+      if (!r.users.length) console.log("No people have roles yet. Grant one: mandat users grant --email you@example.com --roles admin,approver");
+      for (const u of r.users) console.log(`● ${u.id.padEnd(32)} ${u.roles.join(", ")}${u.sub && u.sub !== u.id ? `  (sub ${u.sub})` : ""}  granted by ${u.by}`);
+      return 0;
+    }
+    if (sub === "grant") {
+      const roles = args.list("roles");
+      if ((!args.str("email") && !args.str("sub")) || !roles.length) { console.error("Usage: mandat users grant --email E | --sub SUB --roles approver[,admin,auditor]"); return 2; }
+      const u = await cp(args, "POST", "/api/users", { email: args.str("email"), sub: args.str("sub"), roles });
+      console.log(`✓ ${u.id} now has: ${u.roles.join(", ")}`);
+      return 0;
+    }
+    if (sub === "revoke") {
+      const id = args._[2];
+      if (!id) { console.error("Usage: mandat users revoke <email-or-sub>"); return 2; }
+      const r = await cp(args, "DELETE", `/api/users/${encodeURIComponent(id)}`);
+      console.log(`✓ Removed access for ${r.removed}`);
+      return 0;
+    }
+  } catch (e) { console.error((e as Error).message); return 1; }
+  console.error("Usage: mandat users list|grant|revoke");
   return 2;
 }

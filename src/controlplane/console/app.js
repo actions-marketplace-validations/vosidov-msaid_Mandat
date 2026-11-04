@@ -3,6 +3,7 @@
 
 const $ = (s) => document.querySelector(s);
 const state = { key: "", me: null, tab: "approvals", focus: location.hash.slice(1) || null, policyDirty: false };
+let removeArmed = null;
 
 try { state.key = sessionStorage.getItem("mandat.key") || ""; } catch { /* storage unavailable */ }
 
@@ -37,7 +38,13 @@ function toast(msg) {
 async function api(path, opts = {}) {
   const res = await fetch(path, {
     ...opts,
-    headers: { authorization: "Bearer " + state.key, ...(opts.body ? { "content-type": "application/json" } : {}), ...(opts.headers || {}) },
+    // Without an API key the browser's sign-in session cookie authenticates; the header proves same-origin JS.
+    headers: {
+      "x-requested-with": "mandat",
+      ...(state.key ? { authorization: "Bearer " + state.key } : {}),
+      ...(opts.body ? { "content-type": "application/json" } : {}),
+      ...(opts.headers || {}),
+    },
   });
   const ct = res.headers.get("content-type") || "";
   const body = ct.includes("json") ? await res.json() : await res.text();
@@ -55,16 +62,34 @@ $("#login").addEventListener("submit", async (e) => {
 });
 
 async function connect() {
-  if (!state.key) { $("#who").textContent = "Enter an API key (see .mandat/credentials.json)"; return; }
+  let sso = { enabled: false, issuer: null };
+  try { sso = await (await fetch("/auth/config")).json(); } catch { /* older control plane */ }
+  if (sso.enabled) {
+    const a = $("#sso");
+    a.hidden = false;
+    a.textContent = "Sign in with " + new URL(sso.issuer).host;
+  }
   try {
+    // With no API key this succeeds only if a sign-in session cookie exists.
     state.me = await api("/api/whoami");
-    $("#who").textContent = "Signed in as " + state.me.id + " · " + state.me.roles.join(", ");
+    const me = state.me;
+    const how = me.via === "session" ? "signed in via " + new URL(sso.issuer).host : me.via === "api_key" ? "API key" : me.via;
+    $("#who").textContent = (me.email || me.id) + " · " + me.roles.join(", ") + " · " + how;
+    $("#logout").hidden = me.via !== "session";
+    if (me.via === "session") { $("#sso").hidden = true; $("#apikey").hidden = true; $("#login button[type=submit]").hidden = true; }
     refresh();
   } catch (e) {
     state.me = null;
-    $("#who").textContent = "⚠ " + e.message;
+    $("#who").textContent = state.key || !sso.enabled
+      ? (state.key ? "⚠ " + e.message : "Enter an API key (see .mandat/credentials.json)")
+      : /no role/i.test(e.message) ? "⚠ " + e.message : "Sign in, or use an API key";
   }
 }
+
+$("#logout").addEventListener("click", async () => {
+  await fetch("/auth/logout", { method: "POST", headers: { "x-requested-with": "mandat" } });
+  location.reload();
+});
 
 // ---------- tabs ----------
 document.querySelectorAll(".tabs button").forEach((b) =>
@@ -196,6 +221,18 @@ async function loadAgents() {
       refresh();
     } catch (e) { toast(e.message); }
   };
+  const rotate = async (a) => {
+    try {
+      const r = await api("/api/agents/" + encodeURIComponent(a.id) + "/rotate-secret", { method: "POST", body: JSON.stringify({ revoke_tokens: true }) });
+      out.replaceChildren(h("p", {}, "New client secret for ", h("b", {}, r.id), " (shown once; the old one and its tokens no longer work):"), h("div", { class: "secret mono" }, r.client_secret));
+      refresh();
+    } catch (e) { toast(e.message); }
+  };
+  const remove = async (a) => {
+    if (removeArmed !== a.id) { removeArmed = a.id; toast("Click Remove again to delete " + a.id + " and revoke its tokens."); return; }
+    removeArmed = null;
+    try { await api("/api/agents/" + encodeURIComponent(a.id), { method: "DELETE" }); toast("Removed " + a.id); refresh(); } catch (e) { toast(e.message); }
+  };
   const form = h("form", { class: "form", onsubmit: async (e) => {
     e.preventDefault();
     const f = new FormData(e.target);
@@ -225,7 +262,10 @@ async function loadAgents() {
         h("td", { class: "wrap mono" }, (a.allowed_resources || []).join(", ") || "any"),
         h("td", { class: "mono" }, (a.versions || []).join(", ") || "any"),
         h("td", {}, a.disabled ? pill("disabled", "revoked") : a.revoked ? pill("revoked") : pill("active")),
-        h("td", {}, can("admin") && !a.revoked ? h("button", { class: "deny", onclick: () => kill(a) }, "Kill switch") : null),
+        h("td", {}, h("div", { class: "row" },
+          can("admin") && !a.revoked ? h("button", { class: "deny", onclick: () => kill(a) }, "Kill switch") : null,
+          can("admin") ? h("button", { onclick: () => rotate(a) }, "Rotate secret") : null,
+          can("admin") ? h("button", { onclick: () => remove(a) }, "Remove") : null)),
       )) : h("tr", {}, h("td", { colspan: "7", class: "empty" }, "No agents registered."))),
     )),
     h("div", { class: "grid2 mt" }, h("div", { class: "box" }, h("h3", {}, "Register an agent"), form, out)),

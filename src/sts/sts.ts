@@ -207,19 +207,34 @@ export class Sts {
         if (!p.sub) throw new OAuthError("invalid_grant", "subject_token has no sub");
         return { sub: p.sub, tenant: (p.tenant as string) ?? null, email: p.email as string | undefined };
       }
-      const ti = this.opts.trustedIssuers.find((t) => t.issuer === iss);
-      if (!ti) throw new OAuthError("invalid_grant", `subject_token issuer '${String(iss)}' is not trusted`);
-      let client = this.jwks.get(ti.jwks_uri);
-      if (!client) { client = new JwksClient(ti.jwks_uri); this.jwks.set(ti.jwks_uri, client); }
-      const p = await verifyJwt(token, (h) => client!.getKey(h.kid), { issuer: ti.issuer, audience: ti.audience });
-      if (!p.sub) throw new OAuthError("invalid_grant", "subject_token has no sub");
-      const tenant = ti.tenant_claim ? (p[ti.tenant_claim] as string | undefined) ?? null : null;
-      return { sub: p.sub, tenant, email: p.email as string | undefined };
+      const u = await this.verifyTrusted(token, iss);
+      return { sub: u.sub, tenant: u.tenant, email: u.email };
     } catch (e) {
       if (e instanceof OAuthError) throw e;
       if (e instanceof JwtError) throw new OAuthError("invalid_grant", `subject_token rejected: ${e.message}`);
       throw e;
     }
+  }
+
+  /**
+   * Verifies a human's ID token from a trusted IdP (for console / CLI sign-in). Dev-IdP and Mandat
+   * agent tokens are deliberately not accepted here: anyone can mint the former.
+   */
+  async verifyIdpToken(token: string): Promise<{ iss: string; sub: string; email?: string; email_verified?: boolean; tenant: string | null }> {
+    let iss: unknown;
+    try { iss = JSON.parse(Buffer.from(token.split(".")[1] ?? "", "base64url").toString("utf8")).iss; } catch { throw new JwtError("malformed", "Not a JWT"); }
+    return this.verifyTrusted(token, iss);
+  }
+
+  private async verifyTrusted(token: string, iss: unknown): Promise<{ iss: string; sub: string; email?: string; email_verified?: boolean; tenant: string | null }> {
+    const ti = this.opts.trustedIssuers.find((t) => t.issuer === iss);
+    if (!ti) throw new OAuthError("invalid_grant", `subject_token issuer '${String(iss)}' is not trusted`);
+    let client = this.jwks.get(ti.jwks_uri);
+    if (!client) { client = new JwksClient(ti.jwks_uri); this.jwks.set(ti.jwks_uri, client); }
+    const p = await verifyJwt(token, (h) => client!.getKey(h.kid), { issuer: ti.issuer, audience: ti.audience });
+    if (!p.sub) throw new OAuthError("invalid_grant", "subject_token has no sub");
+    const tenant = ti.tenant_claim ? (p[ti.tenant_claim] as string | undefined) ?? null : null;
+    return { iss: ti.issuer, sub: p.sub, email: p.email as string | undefined, email_verified: p.email_verified as boolean | undefined, tenant };
   }
 
   private ownKey = (): KeyObject => {
