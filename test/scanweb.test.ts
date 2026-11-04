@@ -101,6 +101,17 @@ test("web: pasted client config is checked without any network access", async ()
   assert.equal((await post("/api/scan-config", { config: '{"other": 1}' })).status, 400);
 });
 
+test("web: behind a platform proxy the limit follows the platform's client-IP header", async () => {
+  const { base } = await site({ rateLimit: { max: 1, windowMs: 60_000 }, clientIpHeader: "fly-client-ip" });
+  const scan = (ip: string) => fetch(base + "/api/scan-config", {
+    method: "POST", headers: { "content-type": "application/json", "fly-client-ip": ip },
+    body: JSON.stringify({ config: '{"mcpServers":{"a":{"command":"node","args":["s.js"]}}}' }),
+  }).then((r) => r.status);
+  assert.equal(await scan("203.0.113.1"), 200);
+  assert.equal(await scan("203.0.113.1"), 429);
+  assert.equal(await scan("203.0.113.2"), 200, "a different visitor has their own budget");
+});
+
 test("web: scans are rate-limited per client", async () => {
   const { post } = await site({ rateLimit: { max: 2, windowMs: 60_000 } });
   const cfg = { config: '{"mcpServers":{"a":{"command":"node","args":["s.js"]}}}' };

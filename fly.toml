@@ -1,0 +1,33 @@
+# Fly.io configuration for the public Mandat MCP Scanner (mandat web).
+#   fly launch --no-deploy --copy-config --name <your-app-name>    # first time
+#   fly deploy
+#   fly scale count 1      # reports and rate limits are kept in memory: run exactly one machine
+app = "mandat-scan"
+primary_region = "fra"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  # Always on: share links and rate limits live in memory and would be lost when a machine stops.
+  auto_stop_machines = "off"
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [http_service.concurrency]
+    type = "requests"
+    soft_limit = 50
+    hard_limit = 100
+
+  [[http_service.checks]]
+    grace_period = "10s"
+    interval = "30s"
+    method = "GET"
+    path = "/healthz"
+    timeout = "5s"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"

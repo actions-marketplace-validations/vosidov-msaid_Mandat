@@ -26,7 +26,7 @@ jobs:
           node -e "const p=require('./package.json');const s=p.scripts||{};for(const k of ['preinstall','install','postinstall','prepare'])if(s[k]){console.error('forbidden script: '+k);process.exit(1)}"
       - name: No stray files at the repository root
         run: |
-          stray=$(git ls-files | grep -v / | grep -vxE '\.gitattributes|\.gitignore|LICENSE|README\.md|action\.yml|package-lock\.json|package\.json|tsconfig\.build\.json|tsconfig\.json' || true)
+          stray=$(git ls-files | grep -v / | grep -vxE '\.dockerignore|\.gitattributes|\.gitignore|Dockerfile|fly\.toml|LICENSE|README\.md|action\.yml|package-lock\.json|package\.json|tsconfig\.build\.json|tsconfig\.json' || true)
           stray_py=$(git ls-files python | grep -E '^python/[^/]+$' | grep -vxE 'python/(LICENSE|README\.md|pyproject\.toml|requirements-dev\.txt)' || true)
           if [ -n "$stray$stray_py" ]; then echo "::error::Unexpected files at the repository or python/ root:"; echo "$stray $stray_py"; exit 1; fi
       - name: Dogfood the scanner

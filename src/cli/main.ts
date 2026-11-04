@@ -34,7 +34,7 @@ Scan  (US-1)
   mandat scan <url> [--active]                  Check a remote MCP server's authorization surface
   mandat scan-config [files...] [--src DIR]     Static scan of MCP client configs (auto-detects known paths) and server source
       --format text|json|sarif|html  --out FILE  --fail-on critical|high|medium|low|none (default high)
-  mandat web [--port 7800] [--host 127.0.0.1] [--allow-private] [--trust-proxy]
+  mandat web [--port 7800] [--host 127.0.0.1] [--allow-private] [--trust-proxy | --client-ip-header fly-client-ip]
       Scanner web page: paste a server URL or client config, get a shareable report.
       Private addresses are blocked unless --allow-private (use only on a trusted network).
 
@@ -633,6 +633,7 @@ async function web(args: Args): Promise<number> {
     port, host,
     allowPrivate: args.bool("allow-private"),
     trustProxy: args.bool("trust-proxy"),
+    clientIpHeader: args.str("client-ip-header"),
     rateLimit: { max: args.num("rate", 10), windowMs: 10 * 60_000 },
   });
   const addr = await site.listen();

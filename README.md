@@ -141,6 +141,20 @@ It is built to be hosted publicly, where strangers choose the URLs:
 - **No injection from reports:** report text comes from the scanned server, so it is rendered as text only, under a strict Content Security Policy.
 - **Pasted configs** are parsed, never executed. Reports are kept in memory for 7 days.
 
+### Deploy it on Fly.io
+
+The repository ships a [`Dockerfile`](Dockerfile) and a [`fly.toml`](fly.toml). The image is built from source, contains only the compiled `dist/` (no dependencies), runs as a non-root user, and starts in public mode, using Fly's `Fly-Client-IP` header for rate limiting.
+
+```bash
+fly auth login
+fly launch --no-deploy --copy-config --name <your-app-name>   # keeps fly.toml; pick a unique name
+fly deploy
+fly scale count 1                                             # state is in memory: run exactly one machine
+fly certs add scan.example.com                                # optional custom domain (then add the DNS records it prints)
+```
+
+The default region is Frankfurt (`fra`); change `primary_region` in `fly.toml` if you prefer. The machine is always on (`auto_stop_machines = "off"`), because stopping it would lose share links and rate-limit state.
+
 ---
 
 ## Connecting real agents (Claude Code, Codex, Cursor, Claude Desktop)

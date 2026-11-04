@@ -25,6 +25,8 @@ export interface ScanWebOptions {
   maxConcurrent?: number;
   /** Use the first X-Forwarded-For address as the client IP (behind a reverse proxy). */
   trustProxy?: boolean;
+  /** Header set by your platform's proxy with the client IP, e.g. "fly-client-ip" on Fly.io. Preferred over trustProxy. */
+  clientIpHeader?: string;
   /** How many reports to keep for share links (in memory). Default 1000. */
   maxReports?: number;
 }
@@ -53,6 +55,8 @@ export function createScanWebServer(o: ScanWebOptions): { server: Server; listen
   let running = 0;
 
   const clientIp = (req: IncomingMessage) => {
+    const platform = o.clientIpHeader ? req.headers[o.clientIpHeader.toLowerCase()] : undefined;
+    if (typeof platform === "string" && platform) return platform.trim();
     const fwd = req.headers["x-forwarded-for"];
     if (o.trustProxy && typeof fwd === "string") return fwd.split(",")[0]!.trim();
     return req.socket.remoteAddress ?? "unknown";

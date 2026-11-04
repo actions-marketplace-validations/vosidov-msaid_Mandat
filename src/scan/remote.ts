@@ -119,7 +119,7 @@ export async function scanRemote(target: string, opts: RemoteScanOptions = {}): 
   const bogus = await rpc("initialize", 3, "mandat-scan-invalid-token");
   if (bogus && bogus.status === 200 && init.status === 401) {
     add({ rule: "MDT-R012", severity: "critical", title: "Server accepts an invalid bearer token", detail: "Any non-empty Authorization header is accepted: the token is not validated.", fix: "Validate signature, issuer, audience (this server's URL) and expiry of every access token.", fixCode: FIX_PROTECT, owasp: ["MCP07", "ASI03"] });
-  } else if (bogus && bogus.status === 401) passed.push("rejects-invalid-token");
+  } else if (bogus && bogus.status >= 400 && bogus.status < 500) passed.push("rejects-invalid-token"); // 401, or 400 for a malformed token (RFC 6750)
 
   // 3b. CORS
   const pre = await req(target, { method: "OPTIONS", headers: { origin: "https://evil.mandat-scan.invalid", "access-control-request-method": "POST", "access-control-request-headers": "authorization,content-type" } });
