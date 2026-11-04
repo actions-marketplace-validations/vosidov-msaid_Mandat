@@ -9,6 +9,10 @@ updates:
     directory: /
     schedule: { interval: weekly }
     cooldown: { default-days: 14 }
+    ignore:
+      # Node's type definitions follow the Node version we run on (24); move them together.
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
   - package-ecosystem: pip
     directory: /python
     schedule: { interval: weekly }
