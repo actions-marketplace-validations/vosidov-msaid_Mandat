@@ -24,5 +24,9 @@ jobs:
       - name: No install hooks in the published package
         run: |
           node -e "const p=require('./package.json');const s=p.scripts||{};for(const k of ['preinstall','install','postinstall','prepare'])if(s[k]){console.error('forbidden script: '+k);process.exit(1)}"
+      - name: No stray files at the repository root
+        run: |
+          stray=$(git ls-files | grep -v / | grep -vxE '\.gitattributes|\.gitignore|LICENSE|README\.md|action\.yml|package-lock\.json|package\.json|tsconfig\.build\.json|tsconfig\.json' || true)
+          if [ -n "$stray" ]; then echo "::error::Unexpected files at the repository root:"; echo "$stray"; exit 1; fi
       - name: Dogfood the scanner
         run: node bin/mandat.ts scan-config --src src --fail-on high
