@@ -14,6 +14,15 @@ export interface ControlPlaneClientOptions {
   url: string;
   /** API key with the `service` role. */
   apiKey: string;
+  /** Receives configuration problems such as a rejected API key. */
+  log?: (msg: string) => void;
+}
+
+const isAuthError = (e: unknown) => [401, 403].includes((e as { status?: number }).status ?? 0);
+
+function rejectedKeyMessage(o: ControlPlaneClientOptions, status: number, consequence: string): string {
+  return `Control plane ${o.url} rejected this guard's API key (HTTP ${status}); ${consequence}. ` +
+    "Use the service key from .mandat/credentials.json of the folder where `mandat serve` runs.";
 }
 
 async function call<T>(o: ControlPlaneClientOptions, method: string, path: string, body?: unknown, timeoutMs = 5000): Promise<T> {
@@ -25,7 +34,7 @@ async function call<T>(o: ControlPlaneClientOptions, method: string, path: strin
   });
   const text = await res.text();
   const data = text ? JSON.parse(text) : {};
-  if (!res.ok) throw new Error(`${method} ${path}: ${res.status} ${data.error_description ?? data.error ?? text}`);
+  if (!res.ok) throw Object.assign(new Error(`${method} ${path}: ${res.status} ${data.error_description ?? data.error ?? text}`), { status: res.status });
   return data as T;
 }
 
@@ -36,6 +45,7 @@ export class RemoteRevocations implements RevocationSource {
   private timer: NodeJS.Timeout;
   private o: ControlPlaneClientOptions;
   private staleAfterMs: number;
+  private authWarned = false;
 
   constructor(o: ControlPlaneClientOptions, intervalMs = 2000, staleAfterMs = 15_000) {
     this.o = o;
@@ -49,7 +59,14 @@ export class RemoteRevocations implements RevocationSource {
       const r = await call<{ revocations: Revocation[] }>(this.o, "GET", "/api/revocations", undefined, 3000);
       this.list = r.revocations;
       this.lastOk = Date.now();
-    } catch { /* keep last snapshot; stale() reports it */ }
+      this.authWarned = false;
+    } catch (e) {
+      // Keep the last snapshot; stale() reports it. A rejected key is a configuration error, so say so once.
+      if (isAuthError(e) && !this.authWarned) {
+        this.authWarned = true;
+        this.o.log?.(rejectedKeyMessage(this.o, (e as { status: number }).status, "revocations cannot be refreshed, so financial and destructive tools fail closed"));
+      }
+    }
   }
 
   check(claims: JwtPayload): Revocation | null { return matchRevocation(claims, this.list); }
@@ -161,6 +178,7 @@ export class HttpLedgerSink implements LedgerSink {
   private flushing: Promise<void> | null = null;
   private o: ControlPlaneClientOptions;
   private local?: LedgerSink;
+  private authWarned = false;
   lastError: string | null = null;
 
   constructor(o: ControlPlaneClientOptions, opts: { flushIntervalMs?: number; local?: LedgerSink } = {}) {
@@ -188,8 +206,13 @@ export class HttpLedgerSink implements LedgerSink {
           this.queue.splice(0, batch.length);
         }
         this.lastError = null;
+        this.authWarned = false;
       } catch (e) {
         this.lastError = (e as Error).message; // retried on the next tick
+        if (isAuthError(e) && !this.authWarned) {
+          this.authWarned = true;
+          this.o.log?.(rejectedKeyMessage(this.o, (e as { status: number }).status, `${this.queue.length} audit records are queued and not delivered`));
+        }
       }
     };
     this.flushing = run().finally(() => { this.flushing = null; });

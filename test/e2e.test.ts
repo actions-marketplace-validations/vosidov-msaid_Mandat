@@ -6,7 +6,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createControlPlane, createGuard, McpHttpServer, McpHttpClient, exchangeToken, devLogin, hashApiKey, scanRemote, protect, type ControlPlane, type Guard } from "../src/index.ts";
+import { createControlPlane, createGuard, McpHttpServer, McpHttpClient, exchangeToken, devLogin, hashApiKey, scanRemote, protect, RemoteRevocations, type ControlPlane, type Guard } from "../src/index.ts";
 import { STARTER_POLICY } from "../src/cli/templates.ts";
 import { tools } from "../examples/refund-server/tools.ts";
 
@@ -86,6 +86,26 @@ test("e2e: allowed call, approval via API, denial — all in the central ledger"
   assert.deepEqual(body.records.map((r: any) => r.decision.final).reverse(), ["allow", "allow", "deny"]);
   assert.equal(body.records[1].approval.approvers[0], "alice");
   assert.equal((await api(keys.admin, "GET", "/api/ledger/verify")).body.ok, true);
+});
+
+test("e2e: a guard with a key the control plane rejects fails loudly", async () => {
+  // At startup: refuse to run instead of silently losing audit records.
+  await assert.rejects(
+    createGuard({ resource, controlPlane: issuer, apiKey: "mdt_key_from_another_instance_000", log: () => {} }),
+    /rejected the API key \(HTTP 401\)/,
+  );
+  await assert.rejects(
+    createGuard({ resource, controlPlane: issuer, apiKey: keys.approver, log: () => {} }),
+    /lacks the "service" role/,
+  );
+  // At runtime (control plane replaced under a running guard): warn once, not on every poll.
+  const warnings: string[] = [];
+  const revs = new RemoteRevocations({ url: issuer, apiKey: "mdt_key_from_another_instance_000", log: (m) => warnings.push(m) });
+  await revs.refresh();
+  await revs.refresh();
+  revs.close();
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0]!, /rejected this guard's API key \(HTTP 401\); revocations cannot be refreshed/);
 });
 
 test("e2e: ingest is idempotent (at-least-once delivery without duplicates)", async () => {

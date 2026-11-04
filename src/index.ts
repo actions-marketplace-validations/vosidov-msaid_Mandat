@@ -49,12 +49,29 @@ export interface CreateGuardOptions extends Partial<Pick<GuardOptions, "mode" | 
  * revocations polled every 2 s, policy pulled with an offline snapshot, approvals and ledger over HTTP.
  */
 export async function createGuard(o: CreateGuardOptions): Promise<Guard> {
-  const cp = { url: o.controlPlane, apiKey: o.apiKey };
+  const log = o.log ?? ((m: string) => console.warn(`[mandat] ${m}`));
+  const base = o.controlPlane.replace(/\/$/, "");
+  const cp = { url: base, apiKey: o.apiKey, log };
   const dataDir = o.dataDir ?? ".mandat";
-  const meta = await fetch(`${o.controlPlane.replace(/\/$/, "")}/.well-known/oauth-authorization-server`, { signal: AbortSignal.timeout(5000) })
+
+  // A rejected key is a configuration error: fail now instead of silently losing audit records.
+  // An unreachable control plane is an outage: start from the policy snapshot and retry.
+  const who = await fetch(`${base}/api/whoami`, { headers: { authorization: `Bearer ${o.apiKey}` }, signal: AbortSignal.timeout(5000) }).catch(() => null);
+  if (who && (who.status === 401 || who.status === 403)) {
+    throw new Error(`Mandat control plane at ${base} rejected the API key (HTTP ${who.status}). ` +
+      "Use the \"service\" key from .mandat/credentials.json in the folder where `mandat serve` runs.");
+  }
+  if (who?.ok) {
+    const me = (await who.json()) as { id: string; roles: string[] };
+    if (!me.roles.includes("service")) throw new Error(`API key '${me.id}' lacks the "service" role required by a guard (it has: ${me.roles.join(", ")}).`);
+  } else {
+    log(`Control plane ${base} is unreachable; starting from the last policy snapshot and retrying in the background.`);
+  }
+
+  const meta = await fetch(`${base}/.well-known/oauth-authorization-server`, { signal: AbortSignal.timeout(5000) })
     .then((r) => (r.ok ? (r.json() as Promise<{ issuer: string; jwks_uri: string }>) : null))
     .catch(() => null);
-  const issuer = meta?.issuer ?? o.controlPlane.replace(/\/$/, "");
+  const issuer = meta?.issuer ?? base;
 
   const revocations = new RemoteRevocations(cp);
   await revocations.refresh();
@@ -82,6 +99,6 @@ export async function createGuard(o: CreateGuardOptions): Promise<Guard> {
     pinning: o.pinning,
     redaction: o.redaction,
     source: o.source,
-    log: o.log,
+    log,
   });
 }
