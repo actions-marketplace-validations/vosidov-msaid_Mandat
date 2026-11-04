@@ -64,6 +64,7 @@ export class McpHttpClient {
   private url: string;
   token: string;
   private sessionId: string | null = null;
+  private protocolVersion: string | null = null;
   private id = 0;
 
   constructor(url: string, token: string) {
@@ -78,7 +79,8 @@ export class McpHttpClient {
         "content-type": "application/json",
         accept: "application/json, text/event-stream",
         authorization: `Bearer ${this.token}`,
-        "mcp-protocol-version": "2026-07-28",
+        // Sent only after initialize negotiated a version (2026-07-28 servers reject it on the handshake itself).
+        ...(this.protocolVersion ? { "mcp-protocol-version": this.protocolVersion } : {}),
         ...(this.sessionId ? { "mcp-session-id": this.sessionId } : {}),
       },
       body: JSON.stringify({ jsonrpc: "2.0", id: ++this.id, method, params }),
@@ -97,8 +99,10 @@ export class McpHttpClient {
     return msg.result;
   }
 
-  initialize() {
-    return this.request("initialize", { protocolVersion: "2026-07-28", capabilities: {}, clientInfo: { name: "mandat-client", version: VERSION } });
+  async initialize() {
+    const r = await this.request("initialize", { protocolVersion: "2025-11-25", capabilities: {}, clientInfo: { name: "mandat-client", version: VERSION } });
+    this.protocolVersion = r?.protocolVersion ?? null;
+    return r;
   }
 
   async listTools(): Promise<Array<{ name: string; description?: string }>> {

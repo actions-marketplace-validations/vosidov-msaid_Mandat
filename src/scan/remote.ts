@@ -47,9 +47,12 @@ export async function scanRemote(target: string, opts: RemoteScanOptions = {}): 
   const rpc = (method: string, id: number, token?: string) =>
     req(target, {
       method: "POST",
-      headers: { "content-type": "application/json", accept: "application/json, text/event-stream", "mcp-protocol-version": "2026-07-28", ...(token ? { authorization: `Bearer ${token}` } : {}) },
-      body: JSON.stringify({ jsonrpc: "2.0", id, method, params: method === "initialize" ? { protocolVersion: "2026-07-28", capabilities: {}, clientInfo: { name: "mandat-scan", version: VERSION } } : {} }),
+      // No MCP-Protocol-Version header on initialize: 2026-07-28 servers reject a legacy handshake that carries one.
+      headers: { "content-type": "application/json", accept: "application/json, text/event-stream", ...(token ? { authorization: `Bearer ${token}` } : {}) },
+      body: JSON.stringify({ jsonrpc: "2.0", id, method, params: method === "initialize" ? { protocolVersion: "2025-11-25", capabilities: {}, clientInfo: { name: "mandat-scan", version: VERSION } } : {} }),
     });
+
+  let publicReadOnly = false;
 
   // 1. Transport
   const loopback = ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
@@ -75,12 +78,24 @@ export async function scanRemote(target: string, opts: RemoteScanOptions = {}): 
     const tools = list ? await parseRpcTools(list) : null;
     if (tools) {
       info.exposed_tools = tools.map((t) => t.name);
-      add({
-        rule: "MDT-R002", severity: "critical", title: "Tools exposed without authentication",
-        detail: `tools/list answered without any credentials and exposed ${tools.length} tools (${tools.slice(0, 8).map((t) => t.name).join(", ")}${tools.length > 8 ? ", …" : ""}). 40.55% of public MCP servers are in this state.`,
-        fix: "Require an OAuth bearer token on every MCP request (including initialize and tools/list) and return 401 with a resource_metadata challenge.",
-        fixCode: FIX_PROTECT, owasp: ["MCP07", "ASI03"],
-      });
+      const names = `${tools.slice(0, 8).map((t) => t.name).join(", ")}${tools.length > 8 ? ", …" : ""}`;
+      // Public documentation/search servers are open on purpose; tools that declare readOnlyHint say so.
+      publicReadOnly = tools.length > 0 && tools.every((t) => (t.annotations as { readOnlyHint?: boolean } | undefined)?.readOnlyHint === true);
+      if (publicReadOnly) {
+        add({
+          rule: "MDT-R002", severity: "medium", title: "Read-only tools exposed without authentication",
+          detail: `tools/list answered without credentials and exposed ${tools.length} tools (${names}), all annotated readOnlyHint. Expected for a server that intentionally serves public data; a risk if any tool reaches private data.`,
+          fix: "If the server is meant to be public, keep every tool read-only and rate-limit it. Otherwise require an OAuth bearer token on every MCP request and return 401 with a resource_metadata challenge.",
+          fixCode: FIX_PROTECT, owasp: ["MCP07", "ASI03"],
+        });
+      } else {
+        add({
+          rule: "MDT-R002", severity: "critical", title: "Tools exposed without authentication",
+          detail: `tools/list answered without any credentials and exposed ${tools.length} tools (${names}). 40.55% of public MCP servers are in this state.`,
+          fix: "Require an OAuth bearer token on every MCP request (including initialize and tools/list) and return 401 with a resource_metadata challenge. If the server is intentionally public, mark its tools readOnlyHint so clients and scanners can tell.",
+          fixCode: FIX_PROTECT, owasp: ["MCP07", "ASI03"],
+        });
+      }
       for (const t of tools) {
         const text = `${t.description ?? ""} ${JSON.stringify(t.inputSchema ?? {})}`;
         const hit = POISON_PATTERNS.find(([re]) => re.test(text));
@@ -93,10 +108,11 @@ export async function scanRemote(target: string, opts: RemoteScanOptions = {}): 
     } else {
       add({ rule: "MDT-R002", severity: "high", title: "MCP initialize succeeds without authentication", detail: "The server accepted an unauthenticated initialize request.", fix: "Authenticate every MCP request, not only tools/call.", fixCode: FIX_PROTECT, owasp: ["MCP07", "ASI03"] });
     }
-  } else if (init.status === 401) {
+  } else if (init.status === 401 || init.status === 403) {
     passed.push("auth-required");
   } else {
     info.note = `initialize without credentials returned ${init.status}`;
+    add({ rule: "MDT-R000", severity: "info", title: `Probe rejected (HTTP ${init.status})`, detail: `The server answered the unauthenticated initialize with ${init.status}${(await init.text().catch(() => "")).slice(0, 160).replace(/\s+/g, " ").replace(/^/, ": ")}. Authentication could not be assessed.`, fix: "Check that the URL is the MCP endpoint (often ending in /mcp).", owasp: [] });
   }
 
   // 3. Garbage token must be rejected
@@ -109,9 +125,11 @@ export async function scanRemote(target: string, opts: RemoteScanOptions = {}): 
   const pre = await req(target, { method: "OPTIONS", headers: { origin: "https://evil.mandat-scan.invalid", "access-control-request-method": "POST", "access-control-request-headers": "authorization,content-type" } });
   const acao = pre?.headers.get("access-control-allow-origin");
   const acac = pre?.headers.get("access-control-allow-credentials");
-  if (acao === "https://evil.mandat-scan.invalid" || (acao === "*" && acac === "true"))
-    add({ rule: "MDT-R010", severity: "high", title: "CORS reflects arbitrary origins", detail: `Access-Control-Allow-Origin: ${acao}${acac ? `, Allow-Credentials: ${acac}` : ""}. Any website can drive this MCP server from a victim's browser.`, fix: "Allow-list the exact origins of your web clients and validate the Origin header (DNS rebinding protection).", owasp: ["MCP07"] });
-  else if (acao === "*") add({ rule: "MDT-R010", severity: "low", title: "CORS allows any origin", detail: "Access-Control-Allow-Origin: * on the MCP endpoint.", fix: "Restrict to known origins.", owasp: ["MCP07"] });
+  const reflected = acao === "https://evil.mandat-scan.invalid";
+  if ((reflected || acao === "*") && acac === "true")
+    add({ rule: "MDT-R010", severity: "high", title: "CORS allows any origin with credentials", detail: `Access-Control-Allow-Origin: ${acao}, Allow-Credentials: true. Any website can send credentialed requests (cookies) to this MCP server from a victim's browser.`, fix: "Allow-list the exact origins of your web clients; never combine a reflected origin with Allow-Credentials.", owasp: ["MCP07"] });
+  else if (reflected || acao === "*")
+    add({ rule: "MDT-R010", severity: "low", title: reflected ? "CORS reflects any origin" : "CORS allows any origin", detail: `Access-Control-Allow-Origin: ${acao} without credentials. Fine for bearer-token APIs used from browsers, but it also lets any website call the server with whatever the page can supply.`, fix: "If browser clients are not expected, drop CORS or allow-list known origins.", owasp: ["MCP07"] });
   else passed.push("cors");
 
   // 4. WWW-Authenticate + Protected Resource Metadata (RFC 9728)
@@ -129,7 +147,7 @@ export async function scanRemote(target: string, opts: RemoteScanOptions = {}): 
   }
   info.prm_url = prm ? prmUrl : null;
   if (!prm) {
-    if (init.status !== 200 || findings.some((f) => f.rule === "MDT-R002"))
+    if (init.status === 401 || init.status === 403 || (findings.some((f) => f.rule === "MDT-R002") && !publicReadOnly))
       add({ rule: "MDT-R004", severity: "high", title: "Protected Resource Metadata missing", detail: "No RFC 9728 document found; required by MCP Authorization (2025-06-18 and later).", fix: "Serve /.well-known/oauth-protected-resource with `resource` and `authorization_servers`.", fixCode: `app.get("/.well-known/oauth-protected-resource", (_req, res) => res.json(guard.protectedResourceMetadata()));`, owasp: ["MCP07"] });
     return { target, kind: "remote", scanned_at: new Date().toISOString(), findings, passed, info };
   }
@@ -200,7 +218,7 @@ function normalize(u: string): string {
   return u.replace(/\/+$/, "").toLowerCase();
 }
 
-async function parseRpcTools(res: Response): Promise<Array<{ name: string; description?: string; inputSchema?: unknown }> | null> {
+async function parseRpcTools(res: Response): Promise<Array<{ name: string; description?: string; inputSchema?: unknown; annotations?: unknown }> | null> {
   if (!res.ok) return null;
   const text = await res.text();
   const ct = res.headers.get("content-type") ?? "";

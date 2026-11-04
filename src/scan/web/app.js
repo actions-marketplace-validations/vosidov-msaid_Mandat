@@ -23,7 +23,7 @@ const GRADE_TEXT = {
   C: "Moderate issues: fix them before production.",
   D: "Serious issues: agents or attackers can likely misuse this server.",
   F: "Critical: tools or data are exposed right now.",
-  "?": "The server could not be reached.",
+  "?": "The server could not be assessed: it was unreachable or rejected the probe.",
 };
 
 // ---------- tabs ----------

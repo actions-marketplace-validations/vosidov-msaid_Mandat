@@ -82,8 +82,81 @@ test("remote scan: an unauthenticated MCP server with a poisoned tool", async ()
     assert.ok(ids.includes("MDT-R013"), "tool poisoning");
     assert.ok(ids.includes("MDT-R004"), "no PRM");
     assert.ok(ids.includes("MDT-R010"), "CORS reflection");
+    assert.equal(r.findings.find((f) => f.rule === "MDT-R010")!.severity, "low", "reflected origin without credentials is low");
     assert.equal(r.findings.find((f) => f.rule === "MDT-R002")!.severity, "critical");
   } finally {
     srv.close();
   }
+});
+
+/** Starts a throwaway MCP-ish server; `handler` gets the parsed JSON-RPC message and the raw request. */
+async function fakeServer(handler: (msg: any, req: import("node:http").IncomingMessage, res: import("node:http").ServerResponse) => void): Promise<{ url: string; close(): void }> {
+  const srv = createServer(async (req, res) => {
+    let body = "";
+    for await (const c of req) body += c;
+    handler(body ? JSON.parse(body) : {}, req, res);
+  });
+  await new Promise<void>((r) => srv.listen(0, "127.0.0.1", () => r()));
+  return { url: `http://127.0.0.1:${(srv.address() as { port: number }).port}/mcp`, close: () => srv.close() };
+}
+
+test("remote scan: works against 2026-07-28 servers that reject a legacy handshake carrying a modern version header", async () => {
+  // Real behaviour of servers on the 2026-07-28 revision (seen on public endpoints in Nov 2026).
+  const s = await fakeServer((msg, req, res) => {
+    res.setHeader("content-type", "application/json");
+    if (msg.method === "initialize" && req.headers["mcp-protocol-version"] === "2026-07-28") {
+      res.statusCode = 400;
+      res.end(JSON.stringify({ jsonrpc: "2.0", error: { code: -32020, message: "Bad Request: an initialize request (legacy handshake) was sent with a modern MCP-Protocol-Version header" } }));
+      return;
+    }
+    if (msg.method === "tools/list") res.end(JSON.stringify({ jsonrpc: "2.0", id: msg.id, result: { tools: [{ name: "search_docs", description: "Search docs" }] } }));
+    else res.end(JSON.stringify({ jsonrpc: "2.0", id: msg.id, result: { protocolVersion: "2025-11-25", capabilities: {}, serverInfo: { name: "modern", version: "1" } } }));
+  });
+  try {
+    const r = await scanRemote(s.url);
+    assert.ok(r.findings.some((f) => f.rule === "MDT-R002" && f.severity === "critical"), JSON.stringify(r.findings.map((f) => f.rule)));
+  } finally { s.close(); }
+});
+
+test("remote scan: a public server whose tools are all readOnlyHint is medium, without a missing-metadata finding", async () => {
+  const s = await fakeServer((msg, req, res) => {
+    if (req.url !== "/mcp") { res.statusCode = 404; res.end(); return; }
+    res.setHeader("content-type", "application/json");
+    if (msg.method === "tools/list") res.end(JSON.stringify({ jsonrpc: "2.0", id: msg.id, result: { tools: [
+      { name: "search_docs", description: "Search public docs", annotations: { readOnlyHint: true } },
+      { name: "read_page", description: "Read a doc page", annotations: { readOnlyHint: true } },
+    ] } }));
+    else res.end(JSON.stringify({ jsonrpc: "2.0", id: msg.id, result: { protocolVersion: "2025-11-25", capabilities: {}, serverInfo: { name: "docs", version: "1" } } }));
+  });
+  try {
+    const r = await scanRemote(s.url);
+    const exposed = r.findings.find((f) => f.rule === "MDT-R002")!;
+    assert.equal(exposed.severity, "medium");
+    assert.match(exposed.title, /Read-only tools/);
+    assert.ok(!r.findings.some((f) => f.rule === "MDT-R004"));
+  } finally { s.close(); }
+});
+
+test("remote scan: a rejected probe is reported as not assessable, not as missing auth metadata", async () => {
+  const s = await fakeServer((_msg, _req, res) => { res.statusCode = 400; res.setHeader("content-type", "application/json"); res.end('{"error":"bad request"}'); });
+  try {
+    const r = await scanRemote(s.url);
+    const ids = r.findings.map((f) => f.rule);
+    assert.ok(ids.includes("MDT-R000"));
+    assert.ok(!ids.includes("MDT-R004"), "no PRM finding when the probe itself was rejected");
+  } finally { s.close(); }
+});
+
+test("remote scan: CORS with a reflected origin and credentials is high", async () => {
+  const s = await fakeServer((_msg, req, res) => {
+    res.setHeader("access-control-allow-origin", String(req.headers.origin));
+    res.setHeader("access-control-allow-credentials", "true");
+    if (req.method === "OPTIONS") { res.end(); return; }
+    res.statusCode = 401;
+    res.end();
+  });
+  try {
+    const r = await scanRemote(s.url);
+    assert.equal(r.findings.find((f) => f.rule === "MDT-R010")?.severity, "high");
+  } finally { s.close(); }
 });
