@@ -1,6 +1,6 @@
 {
   "name": "mandat",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Authorization, delegation and audit for AI agent actions (MCP-first). Policy on every tool call, per-task delegated tokens, hash-chained audit ledger, MCP scanner.",
   "license": "Apache-2.0",
   "author": "Muhammadsaid Vosidov",
