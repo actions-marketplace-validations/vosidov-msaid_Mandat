@@ -80,8 +80,11 @@ export function createScanWebServer(o: ScanWebOptions): { server: Server; listen
     return s;
   };
 
-  const page = (res: ServerResponse) => {
+  const page = (req: IncomingMessage, res: ServerResponse) => {
+    // Behind a TLS-terminating proxy (Fly.io sets X-Forwarded-Proto), tell browsers to stay on HTTPS.
+    const https = req.headers["x-forwarded-proto"] === "https";
     res.writeHead(200, {
+      ...(https ? { "strict-transport-security": "max-age=31536000" } : {}),
       "content-type": "text/html; charset=utf-8",
       "content-security-policy": "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
       "x-frame-options": "DENY",
@@ -103,7 +106,7 @@ export function createScanWebServer(o: ScanWebOptions): { server: Server; listen
       const url = new URL(req.url ?? "/", "http://scanner");
       const p = url.pathname;
       const m = req.method ?? "GET";
-      if (m === "GET" && (p === "/" || /^\/r\/[\w-]+$/.test(p))) return page(res);
+      if (m === "GET" && (p === "/" || /^\/r\/[\w-]+$/.test(p))) return page(req, res);
       if (m === "GET" && p === "/app.js") { res.writeHead(200, { "content-type": "text/javascript; charset=utf-8" }); res.end(asset("app.js")); return; }
       if (m === "GET" && p === "/app.css") { res.writeHead(200, { "content-type": "text/css; charset=utf-8" }); res.end(asset("app.css")); return; }
       if (m === "GET" && p === "/favicon.ico") { res.writeHead(204).end(); return; }

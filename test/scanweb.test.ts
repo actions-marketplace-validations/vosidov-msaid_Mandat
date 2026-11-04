@@ -88,6 +88,9 @@ test("web: scan, grade, share link and page security headers", async () => {
   assert.equal(page.status, 200);
   assert.match(page.headers.get("content-security-policy") ?? "", /script-src 'self'/);
   assert.equal(page.headers.get("x-frame-options"), "DENY");
+  assert.equal(page.headers.get("strict-transport-security"), null, "no HSTS over plain HTTP");
+  const viaTls = await fetch(`${base}/`, { headers: { "x-forwarded-proto": "https" } });
+  assert.equal(viaTls.headers.get("strict-transport-security"), "max-age=31536000");
   assert.equal((await fetch(`${base}/api/scan/nope`)).status, 404);
 });
 

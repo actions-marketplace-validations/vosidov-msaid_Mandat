@@ -1,33 +1,38 @@
-# Fly.io configuration for the public Mandat MCP Scanner (mandat web).
-#   fly launch --no-deploy --copy-config --name <your-app-name>    # first time
-#   fly deploy
-#   fly scale count 1      # reports and rate limits are kept in memory: run exactly one machine
-app = "mandat-scan"
-primary_region = "fra"
+# fly.toml app configuration file generated for mandat-crimson-voice-3903 on 2026-11-04T10:43:20+03:00
+#
+# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
+#
+# Mandat MCP Scanner (mandat web). Reports and rate limits are kept in memory, so run exactly one
+# always-on machine: `fly scale count 1`. To deploy your own copy: `fly launch --copy-config --name <app>`.
+#
+
+app = 'mandat-crimson-voice-3903'
+primary_region = 'fra'
 
 [build]
-  dockerfile = "Dockerfile"
+  dockerfile = 'Dockerfile'
 
 [http_service]
   internal_port = 8080
   force_https = true
-  # Always on: share links and rate limits live in memory and would be lost when a machine stops.
-  auto_stop_machines = "off"
+  auto_stop_machines = 'off'
   auto_start_machines = true
   min_machines_running = 1
 
   [http_service.concurrency]
-    type = "requests"
-    soft_limit = 50
+    type = 'requests'
     hard_limit = 100
+    soft_limit = 50
 
   [[http_service.checks]]
-    grace_period = "10s"
-    interval = "30s"
-    method = "GET"
-    path = "/healthz"
-    timeout = "5s"
+    interval = '30s'
+    timeout = '5s'
+    grace_period = '10s'
+    method = 'GET'
+    path = '/healthz'
 
 [[vm]]
-  size = "shared-cpu-1x"
-  memory = "256mb"
+  size = 'shared-cpu-1x'
+  memory = '256mb'
+  cpus = 1
+  memory_mb = 256

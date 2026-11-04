@@ -127,6 +127,8 @@ On the agent side, use `exchangeToken()` and `McpHttpClient` from `mandat`.
 
 ## Scanner web page
 
+**Try it live: [mandat-crimson-voice-3903.fly.dev](https://mandat-crimson-voice-3903.fly.dev/)**
+
 `mandat web` serves the scanner as a page: paste an MCP server URL, or an MCP client config, and get a graded report (A to F) with fixes, code samples and OWASP references. Each report gets a shareable link.
 
 ```bash
