@@ -22,6 +22,7 @@ jobs:
           npx mandat --version
           npx mandat init && npx mandat policy test
       - name: No install hooks in the published package
-        run: node -e "const p=require('./package.json');const s=p.scripts||{};for(const k of ['preinstall','install','postinstall','prepare'])if(s[k]){console.error('forbidden script: '+k);process.exit(1)}"
+        run: |
+          node -e "const p=require('./package.json');const s=p.scripts||{};for(const k of ['preinstall','install','postinstall','prepare'])if(s[k]){console.error('forbidden script: '+k);process.exit(1)}"
       - name: Dogfood the scanner
         run: node bin/mandat.ts scan-config --src src --fail-on high
