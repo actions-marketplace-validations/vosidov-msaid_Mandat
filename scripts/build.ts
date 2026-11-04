@@ -7,4 +7,6 @@ const tsc = createRequire(import.meta.url).resolve("typescript/bin/tsc");
 rmSync("dist", { recursive: true, force: true });
 execFileSync(process.execPath, [tsc, "-p", "tsconfig.build.json"], { stdio: "inherit" });
 cpSync("src/controlplane/console", "dist/controlplane/console", { recursive: true });
+cpSync("src/scan/web", "dist/scan/web", { recursive: true });
+cpSync("src/scan/web", "dist/scan/web", { recursive: true });
 console.log("Built dist/");

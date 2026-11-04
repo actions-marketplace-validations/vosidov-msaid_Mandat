@@ -10,6 +10,7 @@ import { compilePolicy, runPolicyTests, PolicyError, type PolicyDocument, type P
 import { formatHtml, formatSarif, formatText, shouldFail, type ScanReport, type Severity } from "../scan/findings.ts";
 import { scanRemote } from "../scan/remote.ts";
 import { scanConfigFile, scanSource } from "../scan/static.ts";
+import { createScanWebServer } from "../scan/web.ts";
 import { buildLock, diffLock, type LockFile, type ToolDefinition } from "../guard/pinning.ts";
 import { readLedger, verifyLedger, queryRecords } from "../ledger/ledger.ts";
 import { buildReport, reportToMarkdown } from "../ledger/report.ts";
@@ -21,7 +22,7 @@ import { clearSession, currentIdToken, discover, loadSession, login, openSystemB
 import { readJson, writeJsonAtomic } from "../util.ts";
 import { VERSION } from "../version.ts";
 
-const BOOLEANS = ["version", "login", "revoke-tokens", "no-browser", "disable-dev-idp", "active", "check", "force", "json", "tainted", "help", "h", "follow", "frozen", "no-color", "shadow"];
+const BOOLEANS = ["version", "login", "revoke-tokens", "allow-private", "trust-proxy", "no-browser", "disable-dev-idp", "active", "check", "force", "json", "tainted", "help", "h", "follow", "frozen", "no-color", "shadow"];
 
 const HELP = `mandat ${VERSION} — authorization, delegation and audit for AI agent actions
 
@@ -33,6 +34,9 @@ Scan  (US-1)
   mandat scan <url> [--active]                  Check a remote MCP server's authorization surface
   mandat scan-config [files...] [--src DIR]     Static scan of MCP client configs (auto-detects known paths) and server source
       --format text|json|sarif|html  --out FILE  --fail-on critical|high|medium|low|none (default high)
+  mandat web [--port 7800] [--host 127.0.0.1] [--allow-private] [--trust-proxy]
+      Scanner web page: paste a server URL or client config, get a shareable report.
+      Private addresses are blocked unless --allow-private (use only on a trusted network).
 
 Tool pinning  (US-9)
   mandat pin <url> [--token T] [--lock mandat.lock.json] [--check]   Pin / verify tool definitions of an MCP server
@@ -86,6 +90,7 @@ export async function main(argv: string[]): Promise<number> {
     case "serve": return serve(args);
     case "scan": return scan(args);
     case "scan-config": return scanConfig(args);
+    case "web": return web(args);
     case "pin": return pin(args);
     case "policy": return policyCmd(sub, args);
     case "bench": return bench(args);
@@ -619,4 +624,21 @@ async function usersCmd(sub: string | undefined, args: Args): Promise<number> {
   } catch (e) { console.error((e as Error).message); return 1; }
   console.error("Usage: mandat users list|grant|revoke");
   return 2;
+}
+
+async function web(args: Args): Promise<number> {
+  const port = args.num("port", 7800);
+  const host = args.str("host", "127.0.0.1")!;
+  const site = createScanWebServer({
+    port, host,
+    allowPrivate: args.bool("allow-private"),
+    trustProxy: args.bool("trust-proxy"),
+    rateLimit: { max: args.num("rate", 10), windowMs: 10 * 60_000 },
+  });
+  const addr = await site.listen();
+  console.log(`Mandat MCP Scanner at ${addr}`);
+  if (args.bool("allow-private")) console.log("  ⚠ private addresses allowed (--allow-private): do not expose this to the internet");
+  await new Promise<void>((r) => { process.once("SIGINT", r); process.once("SIGTERM", r); });
+  await site.close();
+  return 0;
 }

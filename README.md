@@ -125,6 +125,24 @@ On the agent side, use `exchangeToken()` and `McpHttpClient` from `mandat`.
 
 ---
 
+## Scanner web page
+
+`mandat web` serves the scanner as a page: paste an MCP server URL, or an MCP client config, and get a graded report (A to F) with fixes, code samples and OWASP references. Each report gets a shareable link.
+
+```bash
+mandat web                      # http://127.0.0.1:7800, public mode: only public servers can be scanned
+mandat web --allow-private      # self-hosted on a trusted network: also scan localhost / internal servers
+```
+
+It is built to be hosted publicly, where strangers choose the URLs:
+- **SSRF-safe:** every request, including URLs discovered in the scanned server's responses (PRM, authorization server metadata), goes through a fetch that refuses private, loopback, link-local, cloud-metadata (169.254.169.254), CGNAT, multicast and other reserved addresses. The check runs at connection time on every address DNS returns, which also defeats DNS rebinding. Redirects are never followed, and response bodies are capped at 1 MB.
+- **Passive only:** the intrusive Dynamic Client Registration probe (`--active`) never runs from the page, and no tools are called.
+- **Rate-limited:** 10 scans per client IP per 10 minutes and 4 concurrent scans. Use `--trust-proxy` behind a reverse proxy so the limit applies to real client IPs.
+- **No injection from reports:** report text comes from the scanned server, so it is rendered as text only, under a strict Content Security Policy.
+- **Pasted configs** are parsed, never executed. Reports are kept in memory for 7 days.
+
+---
+
 ## Connecting real agents (Claude Code, Codex, Cursor, Claude Desktop)
 
 These clients start a browser login when an MCP server answers `401`. Mandat's control plane only does token exchange, not that login flow, so connect them through **`mandat bridge`**. The bridge is a local stdio MCP server: it acts as a registered agent, exchanges the user's identity for 5-minute task tokens, and gets a new one before the old one expires.
@@ -335,6 +353,7 @@ Tooling: `mandat policy check|test|eval` and `mandat bench`. On this machine the
 |---|---|
 | **US-1** `mandat scan <url>`: auth on `tools/list`, invalid token, PRM, PKCE S256/`plain`, DCR vs CIMD, `iss` (RFC 9207), CORS, transport, tool poisoning, opt-in redirect-URI probe (`--active`); fixes include code | ✅ |
 | Static scan of client configs (unpinned `npx`/`uvx`, known-malicious versions, typosquats, shell/stdio commands, `curl\|sh`, plaintext secrets, static bearer tokens, `0.0.0.0`, broad filesystem roots, privileged Docker) and server source (eval, shell exec, token passthrough); JSON/SARIF/HTML output; GitHub Action | ✅ |
+| Scanner as a **web check** (PRD phase 0–3) | ✅ `mandat web`: URL or pasted config, graded report, share links; SSRF-safe, passive, rate-limited |
 | **US-2** `protect(server)` for the TS SDK | ✅ verified with @modelcontextprotocol/sdk 1.32.1 (server and `Client`) and MCP Inspector 2.11.0 (CLI). The SDK itself stops at revision 2025-11-25 |
 | **US-2** `mandat.protect(server)` for **Python** | ✅ `pip install "mandat[mcp]"`: guard, `protect()` and token verifier for the official `mcp` 2.x SDK (`MCPServer`). Tested end to end with the Python `ClientSession` against the real control plane; decides identically to TypeScript (shared conformance suite) |
 | **US-3** Argument policies with p99 < 5 ms; approval in Slack with context | ✅ (Slack: Block Kit message + signed interactivity endpoint `/slack/interactions`) |
@@ -373,7 +392,7 @@ The repository has two SDKs that share one control plane and one policy engine s
 | `spec/conformance/` | Decisions both SDKs must reproduce, generated from the TypeScript engine by `node scripts/gen-conformance.ts` | replayed by both suites |
 
 ```bash
-npm test            # 59 tests: expression language, PDP, STS, guard, approvals, ledger, scanner, OIDC, human sign-in, official MCP SDK, end-to-end over HTTP
+npm test            # 65 tests: expression language, PDP, STS, guard, approvals, ledger, scanner, OIDC, human sign-in, official MCP SDK, end-to-end over HTTP
 npm run typecheck   # tsc --strict (dev dependency only)
 npm run build       # dist/ (plain JS + .d.ts) for the npm package; Node >= 20
 npm run demo

@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Mandat MCP Scanner — is your MCP server safe?</title>
+  <meta name="description" content="Free security check for MCP servers: authentication, OAuth discovery, PKCE, CORS, tool poisoning and supply-chain risks in client configs.">
+  <link rel="stylesheet" href="/app.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <header class="bar">
+    <a class="brand" href="/"><span class="seal" aria-hidden="true">M</span><span>Mandat <b>MCP Scanner</b></span></a>
+    <a class="gh" href="https://github.com/vosidov-msaid/Mandat" rel="noopener">GitHub</a>
+  </header>
+
+  <main>
+    <section class="hero">
+      <h1>Is your MCP server<br>open to anyone?</h1>
+      <p class="lede">A measurement study of 7,973 live remote MCP servers found that <strong>40.55% expose their tools without any authentication</strong>, and that every OAuth server examined in depth had at least one flaw. Check yours in a few seconds.</p>
+    </section>
+
+    <section class="panel" aria-label="Scanner">
+      <div class="tabs" role="tablist">
+        <button role="tab" id="tab-url" aria-selected="true" aria-controls="form-url">Scan a server URL</button>
+        <button role="tab" id="tab-config" aria-selected="false" aria-controls="form-config">Check a client config</button>
+      </div>
+
+      <form id="form-url" class="scan" autocomplete="off">
+        <label for="url" class="sr">MCP server URL</label>
+        <input id="url" name="url" type="url" required placeholder="https://mcp.example.com/mcp" spellcheck="false">
+        <button type="submit" class="go">Scan</button>
+        <p class="hint">Passive checks only: we never register clients, call tools or send credentials. Private and internal addresses are blocked.</p>
+      </form>
+
+      <form id="form-config" class="scan" autocomplete="off" hidden>
+        <label for="config" class="sr">MCP client configuration (JSON)</label>
+        <textarea id="config" name="config" rows="9" spellcheck="false" placeholder='{ "mcpServers": { "files": { "command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "/"] } } }'></textarea>
+        <button type="submit" class="go">Check config</button>
+        <p class="hint">Paste claude_desktop_config.json, .mcp.json, .cursor/mcp.json or .vscode/mcp.json. Checked on the server, nothing is executed. Remove real secrets before pasting.</p>
+      </form>
+
+      <p id="status" class="status" role="status" aria-live="polite"></p>
+    </section>
+
+    <section id="result" class="result" hidden aria-live="polite"></section>
+
+    <section class="checks">
+      <h2>What the scan checks</h2>
+      <ul class="grid">
+        <li><b>Authentication</b><span>tools/list and initialize without credentials, and with an invalid token</span></li>
+        <li><b>OAuth discovery</b><span>401 challenge with resource_metadata, Protected Resource Metadata (RFC 9728), authorization server metadata</span></li>
+        <li><b>OAuth hygiene</b><span>PKCE S256, no plain PKCE, no implicit/password grants, iss in responses (RFC 9207), CIMD vs deprecated DCR</span></li>
+        <li><b>Browser exposure</b><span>CORS that reflects any origin, plain HTTP transport</span></li>
+        <li><b>Tool poisoning</b><span>hidden instructions in tool descriptions of servers that expose their tools</span></li>
+        <li><b>Client configs</b><span>unpinned npx/uvx, known-malicious packages, typosquats, shell commands, plaintext secrets, 0.0.0.0, broad filesystem access</span></li>
+      </ul>
+    </section>
+
+    <section class="cta">
+      <h2>Fix it in minutes</h2>
+      <p>Mandat is open source (Apache-2.0). It adds token checks, a policy on every tool call, human approval for risky actions and a tamper-evident audit log to any MCP server.</p>
+      <div class="code"><code>npm install -g mandat</code><code>pip install "mandat[mcp]"</code><code>npx mandat scan &lt;url&gt;</code></div>
+    </section>
+  </main>
+
+  <footer class="foot">Mandat MCP Scanner · results are kept for 7 days so you can share them · <a href="https://github.com/vosidov-msaid/Mandat" rel="noopener">source</a></footer>
+</body>
+</html>

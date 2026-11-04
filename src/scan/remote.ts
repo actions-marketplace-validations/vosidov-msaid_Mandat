@@ -5,7 +5,13 @@
 import type { Finding, ScanReport } from "./findings.ts";
 import { VERSION } from "../version.ts";
 
-export interface RemoteScanOptions { active?: boolean; timeoutMs?: number; headers?: Record<string, string> }
+export interface RemoteScanOptions {
+  active?: boolean;
+  timeoutMs?: number;
+  headers?: Record<string, string>;
+  /** Used for every request, including URLs discovered in the server's responses (PRM, AS metadata). */
+  fetch?: typeof fetch;
+}
 
 const FIX_PROTECT = `// npm i mandat  — then wrap your server:
 import { createGuard, protect } from "mandat";
@@ -33,7 +39,7 @@ export async function scanRemote(target: string, opts: RemoteScanOptions = {}): 
 
   const req = async (u: string, init: RequestInit = {}) => {
     try {
-      return await fetch(u, { redirect: "manual", ...init, headers: { ...opts.headers, ...(init.headers as Record<string, string>) }, signal: AbortSignal.timeout(timeout) });
+      return await (opts.fetch ?? fetch)(u, { redirect: "manual", ...init, headers: { ...opts.headers, ...(init.headers as Record<string, string>) }, signal: AbortSignal.timeout(timeout) });
     } catch (e) {
       return null;
     }

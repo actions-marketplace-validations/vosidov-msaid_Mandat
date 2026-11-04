@@ -23,6 +23,8 @@ export * from "./approvals/approvals.ts";
 export * from "./scan/findings.ts";
 export { scanRemote } from "./scan/remote.ts";
 export { scanConfigFile, scanServers, scanSource } from "./scan/static.ts";
+export { createScanWebServer, grade, type ScanWebOptions, type StoredScan } from "./scan/web.ts";
+export { createSafeFetch, isBlockedAddress, BlockedAddressError } from "./scan/safe-fetch.ts";
 export { createControlPlane, type ControlPlane } from "./controlplane/server.ts";
 export { loadConfig, hashApiKey, type ControlPlaneConfig } from "./controlplane/config.ts";
 export { Bridge, type BridgeOptions } from "./bridge.ts";
