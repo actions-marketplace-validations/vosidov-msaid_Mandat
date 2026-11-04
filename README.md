@@ -355,7 +355,14 @@ Releases are published from GitHub Actions ([`release.yml`](.github/workflows/re
 
 ```bash
 npm version patch          # bumps package.json, commits, tags vX.Y.Z
-git push --follow-tags     # CI checks the tag, runs typecheck and tests, then publishes with provenance
+git push --follow-tags     # CI checks the tag, runs typecheck and tests, then stages the release with provenance
+```
+
+CI only **stages** the release: the npm Trusted Publisher is stage-only, so a maintainer must approve every version with 2FA. Approve it on npmjs.com (package → *Staged Packages*) or from a terminal:
+
+```bash
+npm stage list mandat
+npm stage approve <stage-id>
 ```
 
 License: Apache-2.0.

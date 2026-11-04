@@ -1,8 +1,12 @@
-# Publishes to npm when a version tag (v1.2.3) is pushed.
-# Uses npm Trusted Publishing (OIDC): no npm token is stored anywhere, and npm attaches
-# provenance that links the package to this repository, workflow and commit (PRD 8.3).
+# Stages a release on npm when a version tag (v1.2.3) is pushed; a maintainer then approves it with 2FA.
+#
+# Uses npm Trusted Publishing (OIDC): no npm token is stored anywhere, and npm attaches provenance that
+# links the package to this repository, workflow and commit. The trusted publisher is stage-only (npm's
+# default since 2026-09-03), so CI can never publish on its own: a human confirms every release (PRD 8.3).
+#
 # One-time setup on npmjs.com: package "mandat" -> Settings -> Trusted Publisher -> GitHub Actions,
 # owner "vosidov-msaid", repository "Mandat", workflow "release.yml".
+# Approve each staged release: npmjs.com -> mandat -> Staged Packages, or `npm stage approve <stage-id>`.
 name: release
 on:
   push:
@@ -33,9 +37,25 @@ jobs:
             echo "::error::mandat@$version is already published. Bump the version (npm version patch) and push the new tag."
             exit 1
           fi
-      - name: npm must support trusted publishing (>= 11.5.1)
-        run: node -e "const [a,b,c]=process.argv[1].split('.').map(Number);process.exit(a>11||(a===11&&(b>5||(b===5&&c>=1)))?0:1)" "$(npm --version)"
+      - name: npm must support staged publishing (>= 11.15.0)
+        run: node -e "const [a,b]=process.argv[1].split('.').map(Number);process.exit(a>11||(a===11&&b>=15)?0:1)" "$(npm --version)"
       - run: npm ci --ignore-scripts
       - run: npm run typecheck
       - run: npm test
-      - run: npm publish # prepack builds dist/; provenance is added automatically
+      - run: npm run build
+      - name: Stage the release (provenance is added automatically)
+        run: |
+          set -o pipefail
+          npm stage publish . 2>&1 | tee stage.log
+      - name: Tell the maintainer how to approve
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          {
+            echo "## mandat@$version is staged, not yet published"
+            echo ""
+            echo "Approve it with 2FA: **npmjs.com → mandat → Staged Packages**, or run \`npm stage list mandat\` and \`npm stage approve <stage-id>\`."
+            echo ""
+            echo '```'
+            cat stage.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
