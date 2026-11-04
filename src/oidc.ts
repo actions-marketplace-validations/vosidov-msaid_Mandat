@@ -51,8 +51,18 @@ export class OidcError extends Error {}
 
 const b64url = (b: Buffer) => b.toString("base64url");
 
+/** Accepts "tenant.us.auth0.com" as well as "https://tenant.us.auth0.com/". */
+export function normalizeIssuer(input: string): string {
+  const withScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(input) ? input : `https://${input}`;
+  try {
+    return new URL(withScheme).toString();
+  } catch {
+    throw new OidcError(`Invalid issuer '${input}': expected a URL like https://your-tenant.us.auth0.com/`);
+  }
+}
+
 export async function discover(issuer: string): Promise<OidcMetadata> {
-  const base = issuer.replace(/\/+$/, "");
+  const base = normalizeIssuer(issuer).replace(/\/+$/, "");
   const res = await fetch(`${base}/.well-known/openid-configuration`, { signal: AbortSignal.timeout(10_000) });
   if (!res.ok) throw new OidcError(`OIDC discovery failed for ${issuer}: HTTP ${res.status}`);
   const meta = (await res.json()) as OidcMetadata;

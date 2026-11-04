@@ -6,7 +6,7 @@ import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startFakeIdp, type FakeIdp } from "./fake-idp.ts";
-import { login, saveSession, loadSession, currentIdToken, OidcError } from "../src/oidc.ts";
+import { login, saveSession, loadSession, currentIdToken, normalizeIssuer, OidcError } from "../src/oidc.ts";
 import { createControlPlane, createGuard, McpHttpServer, Bridge, hashApiKey, signJwt, type ControlPlane } from "../src/index.ts";
 import { STARTER_POLICY } from "../src/cli/templates.ts";
 import { tools } from "../examples/refund-server/tools.ts";
@@ -31,6 +31,13 @@ test("login: authorization code + PKCE through the loopback callback, verified I
   assert.ok(s.refresh_token);
   saveSession(s);
   assert.equal(loadSession()?.user.sub, "auth0|maria");
+});
+
+test("issuer: a bare domain gets https://, junk is rejected clearly", () => {
+  assert.equal(normalizeIssuer("muhammadsaid.us.auth0.com"), "https://muhammadsaid.us.auth0.com/");
+  assert.equal(normalizeIssuer("https://muhammadsaid.us.auth0.com/"), "https://muhammadsaid.us.auth0.com/");
+  assert.equal(normalizeIssuer("http://localhost:8080/realms/mandat"), "http://localhost:8080/realms/mandat");
+  assert.throws(() => normalizeIssuer("not a url"), /Invalid issuer/);
 });
 
 test("login: rejects a forged callback (state mismatch)", async () => {
