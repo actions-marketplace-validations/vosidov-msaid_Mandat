@@ -26,6 +26,13 @@ jobs:
         run: |
           expected="v$(node -p "require('./package.json').version")"
           [ "$GITHUB_REF_NAME" = "$expected" ] || { echo "Tag $GITHUB_REF_NAME does not match package.json ($expected)"; exit 1; }
+      - name: Version must not be on npm yet
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          if npm view "mandat@$version" version >/dev/null 2>&1; then
+            echo "::error::mandat@$version is already published. Bump the version (npm version patch) and push the new tag."
+            exit 1
+          fi
       - name: npm must support trusted publishing (>= 11.5.1)
         run: node -e "const [a,b,c]=process.argv[1].split('.').map(Number);process.exit(a>11||(a===11&&(b>5||(b===5&&c>=1)))?0:1)" "$(npm --version)"
       - run: npm ci --ignore-scripts
