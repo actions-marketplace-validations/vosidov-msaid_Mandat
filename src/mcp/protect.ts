@@ -14,7 +14,13 @@ import type { ToolDefinition } from "../guard/pinning.ts";
 type ToolCallback = (...args: any[]) => unknown;
 interface SdkExtra { authInfo?: { token?: string; extra?: Record<string, unknown> }; sessionId?: string }
 
+/** Structural type of the SDK's McpServer. Method syntax keeps it assignable across SDK versions' generics. */
 export interface McpServerLike {
+  registerTool?(name: string, config: any, cb: any): unknown;
+  tool?(name: string, ...rest: any[]): unknown;
+}
+
+interface PatchableServer {
   registerTool?: (name: string, config: Record<string, unknown>, cb: ToolCallback) => unknown;
   tool?: (name: string, ...rest: unknown[]) => unknown;
 }
@@ -48,16 +54,17 @@ export function protect<S extends McpServerLike>(server: S, guard: Guard): S {
     }
   };
 
-  if (typeof server.registerTool === "function") {
-    const orig = server.registerTool.bind(server);
-    server.registerTool = (name, config, cb) => {
+  const s = server as PatchableServer;
+  if (typeof s.registerTool === "function") {
+    const orig = s.registerTool.bind(server);
+    s.registerTool = (name, config, cb) => {
       track({ name, title: config.title as string, description: config.description as string, inputSchema: schemaFingerprint(config.inputSchema), annotations: config.annotations });
       return orig(name, config, wrap(name, cb));
     };
   }
-  if (typeof server.tool === "function") {
-    const orig = server.tool.bind(server);
-    server.tool = (name: string, ...rest: unknown[]) => {
+  if (typeof s.tool === "function") {
+    const orig = s.tool.bind(server);
+    s.tool = (name: string, ...rest: unknown[]) => {
       const cb = rest.pop() as ToolCallback;
       const description = typeof rest[0] === "string" ? (rest[0] as string) : undefined;
       track({ name, description, inputSchema: schemaFingerprint(rest.find((r) => r && typeof r === "object")) });

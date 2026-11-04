@@ -95,8 +95,25 @@ const guard = await createGuard({
 });
 const server = protect(new McpServer({ name: "billing", version: "1.0.0" }), guard); // every registerTool is guarded
 app.get("/.well-known/oauth-protected-resource/mcp", (_q, r) => r.json(guard.protectedResourceMetadata()));
-app.use("/mcp", requireBearerAuth({ verifier: guard.sdkTokenVerifier({ InvalidTokenError }) }));
+app.use("/mcp", requireBearerAuth({
+  verifier: guard.sdkTokenVerifier({ InvalidTokenError }),
+  resourceMetadataUrl: "https://mcp.example.com/.well-known/oauth-protected-resource/mcp",
+  expectedResource: new URL("https://mcp.example.com/mcp"),
+}));
 ```
+
+A complete, runnable server is in [`examples/sdk-server`](examples/sdk-server): `McpServer`, `StreamableHTTPServerTransport` with sessions, express, and the SDK's `requireBearerAuth`. Mandat adds three lines, marked `← Mandat`. Run it with `npm run demo:sdk-server` (from a clone, next to `mandat serve`).
+
+Verified with **@modelcontextprotocol/sdk 1.32.1** and **MCP Inspector 2.11.0**, the Inspector's command-line mode with a Mandat task token in `--header`:
+- `tools/list` and `tools/call` work;
+- calls that policy denies come back as tool errors with the decision in `_meta["mandat/decision"]`;
+- requests without a token get `401` with a `resource_metadata` challenge that the Inspector discovers.
+
+The test suite runs the same server against the SDK's own `Client`.
+
+Two limits that come from the ecosystem, not from Mandat:
+- **Protocol revision:** SDK 1.32.1 supports MCP up to revision 2025-11-25, so an SDK-based server answers with that revision even when a client asks for 2026-07-28. Mandat's built-in server supports both.
+- **Interactive OAuth in the Inspector:** the Inspector can't complete its own browser login against Mandat, because the control plane issues tokens by exchange only. Pass a task token with `--header "Authorization: Bearer …"`, or connect agents through `mandat bridge`.
 
 Without dependencies, use the built-in server: `new McpHttpServer({ name, version, guard, tools }).listen(7401)` (see [`examples/refund-server`](examples/refund-server)).
 
@@ -314,7 +331,7 @@ Tooling: `mandat policy check|test|eval` and `mandat bench`. On this machine the
 |---|---|
 | **US-1** `mandat scan <url>`: auth on `tools/list`, invalid token, PRM, PKCE S256/`plain`, DCR vs CIMD, `iss` (RFC 9207), CORS, transport, tool poisoning, opt-in redirect-URI probe (`--active`); fixes include code | ✅ |
 | Static scan of client configs (unpinned `npx`/`uvx`, known-malicious versions, typosquats, shell/stdio commands, `curl\|sh`, plaintext secrets, static bearer tokens, `0.0.0.0`, broad filesystem roots, privileged Docker) and server source (eval, shell exec, token passthrough); JSON/SARIF/HTML output; GitHub Action | ✅ |
-| **US-2** `protect(server)` for the TS SDK | ✅ (duck-typed adapter, tested against an SDK-shaped fake; not yet run against the real SDK or MCP Inspector) · Python ❌ |
+| **US-2** `protect(server)` for the TS SDK | ✅ verified with @modelcontextprotocol/sdk 1.32.1 (server and `Client`) and MCP Inspector 2.11.0 (CLI). The SDK itself stops at revision 2025-11-25 · Python ❌ |
 | **US-3** Argument policies with p99 < 5 ms; approval in Slack with context | ✅ (Slack: Block Kit message + signed interactivity endpoint `/slack/interactions`) |
 | **US-4** Single-task token via RFC 8693 with `sub` = user, `act` = agent, RAR, 5 min | ✅ for Mandat-protected MCP servers · downstream tokens for Stripe/CRM ❌ |
 | **US-5** ID-JAG / Okta XAA | ❌ |
@@ -343,7 +360,7 @@ Tooling: `mandat policy check|test|eval` and `mandat bench`. On this machine the
 ## Development
 
 ```bash
-npm test            # 54 tests: expression language, PDP, STS, guard, approvals, ledger, scanner, OIDC, human sign-in, end-to-end over HTTP
+npm test            # 57 tests: expression language, PDP, STS, guard, approvals, ledger, scanner, OIDC, human sign-in, official MCP SDK, end-to-end over HTTP
 npm run typecheck   # tsc --strict (dev dependency only)
 npm run build       # dist/ (plain JS + .d.ts) for the npm package; Node >= 20
 npm run demo
