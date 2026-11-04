@@ -1,5 +1,5 @@
 // Public scanner page: paste an MCP server URL (or an MCP client config) and get the report in the browser,
-// with a shareable link. The "scanner as a magnet" of the PRD (section 12).
+// with a shareable link.
 //
 // Safe to host: every outbound request goes through the SSRF-safe fetch (no private or reserved addresses,
 // no redirects, capped bodies), the intrusive DCR probe is never run, and scans are rate-limited per client.

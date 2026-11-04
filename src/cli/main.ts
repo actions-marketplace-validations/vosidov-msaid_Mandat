@@ -30,7 +30,7 @@ Setup
   mandat init [--resource URL] [--force]        Create config, starter policy, keys and API credentials
   mandat serve [--config mandat.config.json]    Run the control plane (STS, approvals, ledger, console)
 
-Scan  (US-1)
+Scan
   mandat scan <url> [--active]                  Check a remote MCP server's authorization surface
   mandat scan-config [files...] [--src DIR]     Static scan of MCP client configs (auto-detects known paths) and server source
       --format text|json|sarif|html  --out FILE  --fail-on critical|high|medium|low|none (default high)
@@ -38,7 +38,7 @@ Scan  (US-1)
       Scanner web page: paste a server URL or client config, get a shareable report.
       Private addresses are blocked unless --allow-private (use only on a trusted network).
 
-Tool pinning  (US-9)
+Tool pinning
   mandat pin <url> [--token T] [--lock mandat.lock.json] [--check]   Pin / verify tool definitions of an MCP server
 
 Policy
@@ -73,7 +73,7 @@ Connect real agents (Claude Code, Codex, Cursor, Claude Desktop)
       --login acts for the user signed in with "mandat login"; --user uses the dev IdP.
       Secret: env MANDAT_AGENT_SECRET (or --secret). Raw IdP token instead: env MANDAT_SUBJECT_TOKEN.
 
-Ledger  (US-6, US-8)
+Ledger
   mandat ledger verify [file]                   Verify the hash chain
   mandat ledger tail [file] [-n 20]
   mandat ledger report [file] [--from ISO] [--to ISO] [--format md|json] [--retention DAYS]

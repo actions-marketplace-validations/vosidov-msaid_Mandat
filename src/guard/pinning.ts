@@ -1,4 +1,4 @@
-// Tool definition pinning (rug-pull / tool-poisoning protection, US-9).
+// Tool definition pinning (rug-pull / tool-poisoning protection).
 // A lockfile stores sha256(name, description, inputSchema, annotations) per tool. Any later change to a
 // description or schema is "drift" and is reported (warn) or blocked until re-approved with `mandat pin`.
 

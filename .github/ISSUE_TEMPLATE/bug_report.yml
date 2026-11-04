@@ -1,0 +1,13 @@
+name: Bug report
+description: Something doesn't work as documented
+labels: [bug]
+body:
+  - type: textarea
+    attributes: { label: What happened, description: "What you did, what you expected, what happened instead." }
+    validations: { required: true }
+  - type: textarea
+    attributes: { label: How to reproduce, description: "Commands, config or code. Remove secrets." }
+  - type: input
+    attributes: { label: Version, description: "`mandat --version`, or `pip show mandat`" }
+  - type: markdown
+    attributes: { value: "**Security problem?** Please report it privately instead: see SECURITY.md." }

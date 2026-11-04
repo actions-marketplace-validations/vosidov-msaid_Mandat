@@ -1,4 +1,4 @@
-// US-2: Mandat protects a server built with the official MCP TypeScript SDK, exercised by the SDK's own client.
+// Mandat protects a server built with the official MCP TypeScript SDK, exercised by the SDK's own client.
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync } from "node:fs";

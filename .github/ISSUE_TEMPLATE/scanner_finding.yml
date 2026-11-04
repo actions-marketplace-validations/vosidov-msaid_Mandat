@@ -1,0 +1,11 @@
+name: Scanner false positive / false negative
+description: The scanner flagged something that is fine, or missed a real problem
+labels: [scanner]
+body:
+  - type: input
+    attributes: { label: Rule, description: "e.g. MDT-R002, MDT-C001" }
+  - type: textarea
+    attributes: { label: What the scanner said and what is actually true }
+    validations: { required: true }
+  - type: textarea
+    attributes: { label: Evidence, description: "The server URL (if public), the config, or the request and response." }

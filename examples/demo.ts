@@ -167,7 +167,7 @@ show("billing-bot refund €40", await subAgent.callTool("refund", { order_id: "
 show("billing-bot lookup_order", await subAgent.callTool("lookup_order", { order_id: "A-1001" }));
 
 // ---------------------------------------------------------------------------------------------
-step("Kill switch: revoke every token of support-bot (US-7: ≤ 10 s)");
+step("Kill switch: revoke every token of support-bot (target: ≤ 10 s)");
 const t0 = Date.now();
 await api(keys.admin, "POST", "/api/revocations", { type: "agent", value: "support-bot", reason: "demo kill switch" });
 let revokedAfter = -1;

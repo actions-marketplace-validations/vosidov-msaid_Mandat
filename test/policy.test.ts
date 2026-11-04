@@ -121,7 +121,7 @@ test("starter policy passes its own test suite", () => {
   assert.deepEqual(results.filter((r) => !r.pass), []);
 });
 
-test("PDP latency: p99 < 5 ms (PRD 8.2), p50 < 0.5 ms", () => {
+test("PDP latency: p99 < 5 ms, p50 < 0.5 ms", () => {
   const p = compilePolicy(STARTER_POLICY);
   const lat: number[] = [];
   for (let i = 0; i < 20_000; i++) {

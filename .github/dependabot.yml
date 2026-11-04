@@ -1,0 +1,15 @@
+# Weekly update PRs. A 14-day cooldown keeps brand-new releases out (supply-chain hygiene).
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: { interval: weekly }
+    cooldown: { default-days: 14 }
+  - package-ecosystem: npm
+    directory: /
+    schedule: { interval: weekly }
+    cooldown: { default-days: 14 }
+  - package-ecosystem: pip
+    directory: /python
+    schedule: { interval: weekly }
+    cooldown: { default-days: 14 }

@@ -1,4 +1,4 @@
-// Compliance / DPO evidence report built from the hash chain (US-8).
+// Compliance / DPO evidence report built from the hash chain.
 // Technical evidence only: qualification of a concrete system remains the operator's responsibility.
 
 import { REJECTED_AUTH_TYPES, verifyRecords, type ActionRecord, type VerifyResult } from "./ledger.ts";

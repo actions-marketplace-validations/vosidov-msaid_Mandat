@@ -158,7 +158,7 @@ test("e2e: `mandat bridge` serves a stdio MCP client (as Claude Code / Codex wou
   }
 });
 
-test("e2e: kill switch revokes a live agent within 10 s (US-7)", async () => {
+test("e2e: kill switch revokes a live agent within 10 s", async () => {
   const c = await agentClient();
   await c.callTool("lookup_order", { order_id: "A-1001" });
   const t0 = Date.now();

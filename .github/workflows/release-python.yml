@@ -1,7 +1,7 @@
 # Publishes the Python SDK to PyPI when a tag like py-v0.1.0 is pushed.
 #
 # Uses PyPI Trusted Publishing (OIDC): no PyPI token is stored anywhere, and the upload carries a
-# digital attestation linking it to this repository, workflow and commit (PRD 8.3).
+# digital attestation linking it to this repository, workflow and commit.
 # One-time setup on pypi.org: Account -> Publishing -> add a (pending) publisher for project "mandat":
 # owner "vosidov-msaid", repository "Mandat", workflow "release-python.yml", environment "pypi".
 # Protect the "pypi" environment in GitHub (Settings -> Environments -> required reviewers) so a

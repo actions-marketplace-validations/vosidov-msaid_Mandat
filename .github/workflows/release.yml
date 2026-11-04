@@ -2,7 +2,7 @@
 #
 # Uses npm Trusted Publishing (OIDC): no npm token is stored anywhere, and npm attaches provenance that
 # links the package to this repository, workflow and commit. The trusted publisher is stage-only (npm's
-# default since 2026-09-03), so CI can never publish on its own: a human confirms every release (PRD 8.3).
+# default since 2026-09-03), so CI can never publish on its own: a human confirms every release.
 #
 # One-time setup on npmjs.com: package "mandat" -> Settings -> Trusted Publisher -> GitHub Actions,
 # owner "vosidov-msaid", repository "Mandat", workflow "release.yml".

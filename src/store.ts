@@ -1,5 +1,5 @@
 // Tiny durable key/value collection persisted as one JSON file (atomic rewrite on change).
-// Good enough for an MVP control plane; swap for Postgres behind the same interface later.
+// Good enough for a single-node control plane; swap for a database behind the same interface later.
 
 import { readJson, writeJsonAtomic } from "./util.ts";
 

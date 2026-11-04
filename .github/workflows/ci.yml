@@ -6,7 +6,7 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      # Third-party actions are pinned by commit SHA (PRD 8.3). Bump deliberately.
+      # Third-party actions are pinned by commit SHA (supply-chain hardening). Bump deliberately.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: { persist-credentials: false }
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
@@ -26,7 +26,7 @@ jobs:
           node -e "const p=require('./package.json');const s=p.scripts||{};for(const k of ['preinstall','install','postinstall','prepare'])if(s[k]){console.error('forbidden script: '+k);process.exit(1)}"
       - name: No stray files at the repository root
         run: |
-          stray=$(git ls-files | grep -v / | grep -vxE '\.dockerignore|\.gitattributes|\.gitignore|Dockerfile|fly\.toml|LICENSE|README\.md|action\.yml|package-lock\.json|package\.json|tsconfig\.build\.json|tsconfig\.json' || true)
+          stray=$(git ls-files | grep -v / | grep -vxE '\.dockerignore|\.gitattributes|\.gitignore|CHANGELOG\.md|CONTRIBUTING\.md|Dockerfile|fly\.toml|LICENSE|README\.md|SECURITY\.md|action\.yml|package-lock\.json|package\.json|tsconfig\.build\.json|tsconfig\.json' || true)
           stray_py=$(git ls-files python | grep -E '^python/[^/]+$' | grep -vxE 'python/(LICENSE|README\.md|pyproject\.toml|requirements-dev\.txt)' || true)
           if [ -n "$stray$stray_py" ]; then echo "::error::Unexpected files at the repository or python/ root:"; echo "$stray $stray_py"; exit 1; fi
       - name: Dogfood the scanner
@@ -49,3 +49,25 @@ jobs:
       - name: Python tests (conformance with the TypeScript engine, guard, end to end with the official mcp SDK)
         working-directory: python
         run: python -m unittest discover -s tests -v
+
+  action:
+    # Runs the GitHub Action exactly as users do.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      - name: Clean config passes
+        uses: ./
+        with: { configs: test/fixtures/clean-mcp.json }
+      - name: Risky config fails
+        id: risky
+        uses: ./
+        continue-on-error: true
+        with: { configs: test/fixtures/risky-mcp.json }
+      - name: The risky scan must have failed and produced SARIF
+        env:
+          OUTCOME: ${{ steps.risky.outcome }}
+          SARIF: ${{ steps.risky.outputs.sarif }}
+        run: |
+          [ "$OUTCOME" = "failure" ] || { echo "::error::risky config did not fail the action"; exit 1; }
+          grep -q "MDT-C002" "$SARIF" || { echo "::error::SARIF lacks the malicious-package finding"; exit 1; }
