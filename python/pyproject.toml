@@ -1,0 +1,30 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "mandat"
+version = "0.1.0"
+description = "Authorization, delegation and audit for AI agent actions (MCP-first): Python guard for Mandat."
+readme = "README.md"
+license = "Apache-2.0"
+authors = [{ name = "Muhammadsaid Vosidov" }]
+requires-python = ">=3.10"
+dependencies = ["cryptography>=42"]
+keywords = ["mcp", "model-context-protocol", "ai-agents", "authorization", "oauth", "audit", "security"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Topic :: Security",
+  "Framework :: AsyncIO",
+]
+
+[project.optional-dependencies]
+mcp = ["mcp>=2.0"]
+
+[project.urls]
+Homepage = "https://github.com/vosidov-msaid/Mandat"
+Source = "https://github.com/vosidov-msaid/Mandat/tree/main/python"
+Issues = "https://github.com/vosidov-msaid/Mandat/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mandat"]

@@ -16,3 +16,10 @@ mandat.lock.json
 .code-review-graph/
 .swarm/
 .playwright-mcp/
+
+# Python SDK
+python/.venv/
+python/dist/
+python/build/
+**/__pycache__/
+*.egg-info/

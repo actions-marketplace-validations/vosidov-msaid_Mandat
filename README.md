@@ -82,6 +82,10 @@ mandat ledger verify && mandat ledger report --retention 365
 
 ### Protecting your MCP server
 
+**Python** (official `mcp` SDK 2.x): `pip install "mandat[mcp]"`, then `protect(MCPServer(..., token_verifier=token_verifier(guard), auth=auth_settings(guard)), guard)`. See [`python/`](python/README.md) for the full guide and a runnable server.
+
+**TypeScript:**
+
 With the official TypeScript SDK:
 
 ```ts
@@ -331,7 +335,8 @@ Tooling: `mandat policy check|test|eval` and `mandat bench`. On this machine the
 |---|---|
 | **US-1** `mandat scan <url>`: auth on `tools/list`, invalid token, PRM, PKCE S256/`plain`, DCR vs CIMD, `iss` (RFC 9207), CORS, transport, tool poisoning, opt-in redirect-URI probe (`--active`); fixes include code | ✅ |
 | Static scan of client configs (unpinned `npx`/`uvx`, known-malicious versions, typosquats, shell/stdio commands, `curl\|sh`, plaintext secrets, static bearer tokens, `0.0.0.0`, broad filesystem roots, privileged Docker) and server source (eval, shell exec, token passthrough); JSON/SARIF/HTML output; GitHub Action | ✅ |
-| **US-2** `protect(server)` for the TS SDK | ✅ verified with @modelcontextprotocol/sdk 1.32.1 (server and `Client`) and MCP Inspector 2.11.0 (CLI). The SDK itself stops at revision 2025-11-25 · Python ❌ |
+| **US-2** `protect(server)` for the TS SDK | ✅ verified with @modelcontextprotocol/sdk 1.32.1 (server and `Client`) and MCP Inspector 2.11.0 (CLI). The SDK itself stops at revision 2025-11-25 |
+| **US-2** `mandat.protect(server)` for **Python** | ✅ `pip install "mandat[mcp]"`: guard, `protect()` and token verifier for the official `mcp` 2.x SDK (`MCPServer`). Tested end to end with the Python `ClientSession` against the real control plane; decides identically to TypeScript (shared conformance suite) |
 | **US-3** Argument policies with p99 < 5 ms; approval in Slack with context | ✅ (Slack: Block Kit message + signed interactivity endpoint `/slack/interactions`) |
 | **US-4** Single-task token via RFC 8693 with `sub` = user, `act` = agent, RAR, 5 min | ✅ for Mandat-protected MCP servers · downstream tokens for Stripe/CRM ❌ |
 | **US-5** ID-JAG / Okta XAA | ❌ |
@@ -359,8 +364,16 @@ Tooling: `mandat policy check|test|eval` and `mandat bench`. On this machine the
 
 ## Development
 
+The repository has two SDKs that share one control plane and one policy engine specification:
+
+| Folder | What | Tests |
+|---|---|---|
+| `src/`, `test/` | TypeScript: control plane, CLI, guard, scanner (npm `mandat`) | `npm test` |
+| `python/` | Python guard and MCP integration (PyPI `mandat`) | `cd python && python -m unittest discover -s tests` |
+| `spec/conformance/` | Decisions both SDKs must reproduce, generated from the TypeScript engine by `node scripts/gen-conformance.ts` | replayed by both suites |
+
 ```bash
-npm test            # 57 tests: expression language, PDP, STS, guard, approvals, ledger, scanner, OIDC, human sign-in, official MCP SDK, end-to-end over HTTP
+npm test            # 59 tests: expression language, PDP, STS, guard, approvals, ledger, scanner, OIDC, human sign-in, official MCP SDK, end-to-end over HTTP
 npm run typecheck   # tsc --strict (dev dependency only)
 npm run build       # dist/ (plain JS + .d.ts) for the npm package; Node >= 20
 npm run demo
@@ -375,7 +388,9 @@ npm version patch          # bumps package.json, commits, tags vX.Y.Z
 git push --follow-tags     # CI checks the tag, runs typecheck and tests, then stages the release with provenance
 ```
 
-CI only **stages** the release: the npm Trusted Publisher is stage-only, so a maintainer must approve every version with 2FA. Approve it on npmjs.com (package → *Staged Packages*) or from a terminal:
+The Python SDK is released separately by pushing a `py-vX.Y.Z` tag ([`release-python.yml`](.github/workflows/release-python.yml)). It uses PyPI Trusted Publishing; see the comment at the top of that workflow for the one-time PyPI setup.
+
+CI only **stages** the npm release: the npm Trusted Publisher is stage-only, so a maintainer must approve every version with 2FA. Approve it on npmjs.com (package → *Staged Packages*) or from a terminal:
 
 ```bash
 npm stage list mandat
