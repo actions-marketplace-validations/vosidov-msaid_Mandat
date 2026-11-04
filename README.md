@@ -10,16 +10,30 @@ Mandat answers three questions about every tool call an AI agent makes:
 
 It also ships a **scanner** that checks MCP servers and client configs for the auth and supply-chain mistakes found in most public MCP servers.
 
-This repo is the **MVP** (PRD phase 0–3 months, plus the core of delegation from phase 3–6). The spec it implements is in [`specs/rpd.md`](specs/rpd.md).
+This is the **MVP** (PRD phase 0–3 months, plus the core of delegation from phase 3–6). The spec it implements is in [`specs/rpd.md`](specs/rpd.md).
 
-> Zero runtime dependencies. The npm package ships compiled JavaScript (Node ≥ 20). For development, Node ≥ 23.6 runs the TypeScript sources directly.
+[![ci](https://github.com/vosidov-msaid/Mandat/actions/workflows/ci.yml/badge.svg)](https://github.com/vosidov-msaid/Mandat/actions/workflows/ci.yml)
+[![npm](https://img.shields.io/npm/v/mandat)](https://www.npmjs.com/package/mandat)
+
+## Install
+
+```bash
+npm install -g mandat        # the `mandat` CLI (control plane, scanner, bridge for agents)
+npm install mandat           # the library, inside your MCP server or agent project
+npx mandat scan <url>        # or run any command without installing
+```
+
+Requires Node ≥ 20. Zero runtime dependencies and no install scripts.
 
 ---
 
 ## 60-second demo
 
+The demo and the example MCP server live in the repository, not in the npm package:
+
 ```bash
-node examples/demo.ts          # full scenario, then exit
+git clone https://github.com/vosidov-msaid/Mandat.git && cd Mandat
+node examples/demo.ts          # full scenario, then exit (Node ≥ 23.6; no npm install needed)
 node examples/demo.ts --keep   # …and keep the console running at the printed URL
 ```
 
@@ -49,10 +63,10 @@ mandat serve                                  # control plane + console on http:
 
 mandat agents add support-bot --tools "lookup_*,refund,send_email,read_inbox" \
        --resources http://127.0.0.1:7401/mcp --versions 1.4.0     # prints the client secret once
-node examples/refund-server/server.ts         # protected MCP server on :7401
+node examples/refund-server/server.ts         # in a clone: protected example MCP server on :7401
 ```
 
-(`mandat` is `node bin/mandat.ts`. Run `npm link` once to get the short name.)
+These commands assume `npm install -g mandat`. Inside a clone of the repo, use `node bin/mandat.ts` instead of `mandat`.
 
 Then, as an agent:
 
@@ -99,29 +113,33 @@ mandat agents add claude-code --tools "lookup_*,refund,read_inbox,send_email,del
 # → copy the client_secret
 ```
 
+The examples pin an exact version (`mandat@0.1.1`). Use the version you have reviewed: an unpinned `npx -y` runs whatever is published next, and `mandat scan-config` flags that.
+
 **Claude Code**
 
 ```bash
 claude mcp add acme -e MANDAT_AGENT_SECRET=<secret> -- \
-  node D:/Projects/Mandat1/bin/mandat.ts bridge --url http://127.0.0.1:7401/mcp \
+  npx -y mandat@0.1.1 bridge --url http://127.0.0.1:7401/mcp \
   --mandat http://127.0.0.1:7400 --agent claude-code --user user:maria --email maria@acme.example
 ```
 
-Equivalent `.mcp.json`:
+On Windows, start the command with `cmd /c`: `… -- cmd /c npx -y mandat@0.1.1 bridge …`
+
+Equivalent `.mcp.json` (on Windows: `"command": "cmd"`, and put `"/c", "npx"` at the start of `args`):
 
 ```json
-{ "mcpServers": { "acme": { "command": "node",
-  "args": ["D:/Projects/Mandat1/bin/mandat.ts", "bridge", "--url", "http://127.0.0.1:7401/mcp", "--mandat", "http://127.0.0.1:7400",
+{ "mcpServers": { "acme": { "command": "npx",
+  "args": ["-y", "mandat@0.1.1", "bridge", "--url", "http://127.0.0.1:7401/mcp", "--mandat", "http://127.0.0.1:7400",
            "--agent", "claude-code", "--user", "user:maria", "--email", "maria@acme.example"],
   "env": { "MANDAT_AGENT_SECRET": "<secret>" } } } }
 ```
 
-**Codex** (`~/.codex/config.toml`)
+**Codex** (`~/.codex/config.toml`; on Windows use `command = "cmd"` and `args = ["/c", "npx", "-y", …]`)
 
 ```toml
 [mcp_servers.acme]
-command = "node"
-args = ["D:/Projects/Mandat1/bin/mandat.ts", "bridge", "--url", "http://127.0.0.1:7401/mcp", "--mandat", "http://127.0.0.1:7400",
+command = "npx"
+args = ["-y", "mandat@0.1.1", "bridge", "--url", "http://127.0.0.1:7401/mcp", "--mandat", "http://127.0.0.1:7400",
         "--agent", "codex", "--user", "user:maria", "--email", "maria@acme.example"]
 env = { MANDAT_AGENT_SECRET = "<secret>" }
 
@@ -177,7 +195,7 @@ The session is stored in `~/.mandat/session.json` (mode 0600) and refreshed auto
 
 ```bash
 claude mcp add acme -e MANDAT_AGENT_SECRET=<secret> -- \
-  node D:/Projects/Mandat1/bin/mandat.ts bridge --url http://127.0.0.1:7401/mcp --mandat http://127.0.0.1:7400 --agent claude-code --login
+  npx -y mandat@0.1.1 bridge --url http://127.0.0.1:7401/mcp --mandat http://127.0.0.1:7400 --agent claude-code --login
 ```
 
 Every call is now attributed to the Auth0 user, for example `principal.sub = "auth0|…"`, with their e-mail and `org_id` as tenant. That identity is what policies, approvals and the ledger see. The STS accepts only ID tokens issued by the trusted tenant **to that client ID**, so tokens issued to your other Auth0 apps are rejected.
@@ -284,10 +302,19 @@ Tooling: `mandat policy check|test|eval` and `mandat bench`. On this machine the
 ## Development
 
 ```bash
-npm test            # 46 tests: expression language, PDP, STS, guard, approvals, ledger, scanner, end-to-end over HTTP
+npm test            # 46 tests: expression language, PDP, STS, guard, approvals, ledger, scanner, OIDC, end-to-end over HTTP
 npm run typecheck   # tsc --strict (dev dependency only)
 npm run build       # dist/ (plain JS + .d.ts) for the npm package; Node >= 20
 npm run demo
+```
+
+## Releasing
+
+Releases are published from GitHub Actions ([`release.yml`](.github/workflows/release.yml)) using npm Trusted Publishing, so no npm token is stored anywhere:
+
+```bash
+npm version patch          # bumps package.json, commits, tags vX.Y.Z
+git push --follow-tags     # CI checks the tag, runs typecheck and tests, then publishes with provenance
 ```
 
 License: Apache-2.0.

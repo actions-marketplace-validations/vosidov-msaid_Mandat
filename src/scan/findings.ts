@@ -1,5 +1,7 @@
 // Finding model + output formats (text, JSON, SARIF 2.1.0, HTML).
 
+import { VERSION } from "../version.ts";
+
 export type Severity = "critical" | "high" | "medium" | "low" | "info";
 export const SEVERITIES: Severity[] = ["critical", "high", "medium", "low", "info"];
 
@@ -74,7 +76,7 @@ export function formatSarif(reports: ScanReport[]): string {
       tool: {
         driver: {
           name: "mandat-scan",
-          version: "0.1.0",
+          version: VERSION,
           rules: [...rules.values()].map((f) => ({
             id: f.rule,
             name: f.title.replace(/[^A-Za-z0-9]+/g, ""),

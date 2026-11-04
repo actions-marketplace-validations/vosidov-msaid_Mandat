@@ -19,8 +19,8 @@ import { hashApiKey, loadConfig, type ControlPlaneConfig } from "../controlplane
 import { Bridge } from "../bridge.ts";
 import { clearSession, currentIdToken, discover, loadSession, login, openSystemBrowser, saveSession } from "../oidc.ts";
 import { readJson, writeJsonAtomic } from "../util.ts";
+import { VERSION } from "../version.ts";
 
-const VERSION = "0.1.0";
 const BOOLEANS = ["version", "login", "no-browser", "disable-dev-idp", "active", "check", "force", "json", "tainted", "help", "h", "follow", "frozen", "no-color", "shadow"];
 
 const HELP = `mandat ${VERSION} — authorization, delegation and audit for AI agent actions

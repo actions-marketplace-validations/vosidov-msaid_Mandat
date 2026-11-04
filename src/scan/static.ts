@@ -40,7 +40,9 @@ const RUNNERS: Record<string, { pinned: (spec: string) => boolean; eco: "npm" | 
 };
 
 const SHELLS = ["sh", "bash", "zsh", "cmd", "cmd.exe", "powershell", "powershell.exe", "pwsh", "pwsh.exe"];
-const SECRET_ENV = /(TOKEN|SECRET|PASSWORD|PASSWD|API_?KEY|PRIVATE_KEY|ACCESS_KEY|CLIENT_SECRET|CREDENTIALS?)/i;
+const SHELL_FLAGS = ["-c", "/c", "-command", "-encodedcommand", "/k"];
+const baseName = (command: string) => command.split(/[\\/]/).pop()!.toLowerCase();
+const SECRET_ENV =/(TOKEN|SECRET|PASSWORD|PASSWD|API_?KEY|PRIVATE_KEY|ACCESS_KEY|CLIENT_SECRET|CREDENTIALS?)/i;
 
 export function scanConfigFile(path: string): ScanReport {
   const text = readFileSync(path, "utf8");
@@ -63,9 +65,19 @@ export function scanServers(servers: Record<string, ServerEntry>, file: string, 
   for (const [name, s] of Object.entries(servers)) {
     const location = { file, server: name, line: lineOf(`"${name}"`) };
     const add = (f: Omit<Finding, "location">) => findings.push({ ...f, location });
-    const cmd = (s.command ?? "").split(/[\\/]/).pop()!.toLowerCase();
-    const args = (s.args ?? []).map(String);
+    let cmd = baseName(s.command ?? "");
+    let args = (s.args ?? []).map(String);
     const all = [s.command ?? "", ...args].join(" ");
+
+    // `cmd /c npx -y pkg@1.2.3` is the documented way to start stdio servers on Windows. When a shell only
+    // wraps a plain command (separate tokens, no metacharacters), analyse the inner command instead.
+    let shellString = false;
+    const flagIdx = SHELLS.includes(cmd) ? args.findIndex((a) => SHELL_FLAGS.includes(a.toLowerCase())) : -1;
+    if (flagIdx >= 0) {
+      const rest = args.slice(flagIdx + 1);
+      const plain = rest.length > 0 && !rest.some((a) => /[|&;<>`$()]/.test(a)) && !(rest.length === 1 && /\s/.test(rest[0]!));
+      if (plain) { cmd = baseName(rest[0]!); args = rest.slice(1); } else shellString = true;
+    }
 
     // Package runners: pinning, malicious versions, typosquats
     const runner = RUNNERS[cmd.replace(/\.(cmd|exe)$/, "")];
@@ -90,7 +102,7 @@ export function scanServers(servers: Record<string, ServerEntry>, file: string, 
     }
 
     // Shell interpreters / remote code
-    if (SHELLS.includes(cmd) && args.some((a) => ["-c", "/c", "-command", "-encodedcommand", "/k"].includes(a.toLowerCase()))) {
+    if (shellString) {
       add({ rule: "MDT-C004", severity: "high", title: "MCP server launched through a shell", detail: `'${all.slice(0, 120)}' runs an arbitrary shell string. stdio transports execute whatever command they are given (CVE-2026-30623 class).`, fix: "Invoke the server binary directly with an argument array; never build stdio commands from untrusted input.", owasp: ["ASI05", "MCP05"] });
     }
     if (/(curl|wget|iwr|invoke-webrequest)[^|]*\|\s*(sh|bash|iex|python)/i.test(all) || /\beval\b/.test(all)) {

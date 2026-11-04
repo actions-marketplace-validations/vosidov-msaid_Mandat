@@ -21,6 +21,9 @@ test("config scan: supply chain, shell, secrets, binding, filesystem, static tok
       "web": { "command": "node", "args": ["server.js", "--host", "0.0.0.0"] },
       "remote": { "url": "http://mcp.example.net/mcp", "headers": { "Authorization": "Bearer sk_live_abcdefghijklmnop" } },
       "ok": { "command": "npx", "args": ["-y", "@playwright/mcp@0.0.41"], "env": { "API_KEY": "\${env:API_KEY}" } },
+      "win-ok": { "command": "cmd", "args": ["/c", "npx", "-y", "mandat@0.1.1", "bridge", "--login"] },
+      "win-unpinned": { "command": "cmd", "args": ["/c", "npx", "-y", "postmark-mcp"] },
+      "win-string": { "command": "cmd", "args": ["/c", "npx -y foo & del /q C:\\\\x"] },
     }
   }`);
   const r = scanConfigFile(file);
@@ -32,6 +35,10 @@ test("config scan: supply chain, shell, secrets, binding, filesystem, static tok
   assert.deepEqual(rules("web"), ["MDT-C008"]);
   assert.deepEqual(rules("remote"), ["MDT-C007", "MDT-C011"]);
   assert.deepEqual(rules("ok"), []);
+  // Windows `cmd /c` wrappers: plain commands are unwrapped and analysed, shell strings are flagged.
+  assert.deepEqual(rules("win-ok"), []);
+  assert.deepEqual(rules("win-unpinned"), ["MDT-C001", "MDT-C002"]);
+  assert.deepEqual(rules("win-string"), ["MDT-C004"]);
   assert.equal(shouldFail([r], "high"), true);
   const sarif = JSON.parse(formatSarif([r]));
   assert.equal(sarif.version, "2.1.0");

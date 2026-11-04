@@ -5,6 +5,7 @@
 
 import type { ActionRecord } from "./ledger.ts";
 import { sha256 } from "../util.ts";
+import { VERSION } from "../version.ts";
 
 const OCSF_VERSION = "1.3.0";
 
@@ -30,7 +31,7 @@ export function toOcsf(r: ActionRecord): Record<string, unknown> {
       uid: r.id,
       correlation_uid: r.task_id ?? undefined,
       labels: [r.type, ...(r.tags ?? [])],
-      product: { name: "Mandat", vendor_name: "Mandat", version: "0.1.0" },
+      product: { name: "Mandat", vendor_name: "Mandat", version: VERSION },
       sequence: r.seq,
     },
     actor: {
@@ -154,7 +155,7 @@ export class OtlpExporter {
         const body = {
           resourceSpans: [{
             resource: { attributes: [attr("service.name", this.opts.serviceName)] },
-            scopeSpans: [{ scope: { name: "mandat", version: "0.1.0" }, spans: batch.map(toOtelSpan) }],
+            scopeSpans: [{ scope: { name: "mandat", version: VERSION }, spans: batch.map(toOtelSpan) }],
           }],
         };
         const res = await fetch(this.opts.endpoint.replace(/\/$/, "") + "/v1/traces", {

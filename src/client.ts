@@ -3,6 +3,7 @@
 import { GRANT_TOKEN_EXCHANGE, TT_ID_TOKEN } from "./sts/sts.ts";
 import type { AuthorizationDetail } from "./policy/engine.ts";
 import { sha256 } from "./util.ts";
+import { VERSION } from "./version.ts";
 
 export interface ExchangeOptions {
   /** Mandat control plane base URL. */
@@ -97,7 +98,7 @@ export class McpHttpClient {
   }
 
   initialize() {
-    return this.request("initialize", { protocolVersion: "2026-07-28", capabilities: {}, clientInfo: { name: "mandat-client", version: "0.1.0" } });
+    return this.request("initialize", { protocolVersion: "2026-07-28", capabilities: {}, clientInfo: { name: "mandat-client", version: VERSION } });
   }
 
   async listTools(): Promise<Array<{ name: string; description?: string }>> {

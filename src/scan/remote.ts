@@ -3,6 +3,7 @@
 // DCR vs CIMD, `iss` (RFC 9207), CORS, transport. Passive by default; `active` adds a DCR redirect probe.
 
 import type { Finding, ScanReport } from "./findings.ts";
+import { VERSION } from "../version.ts";
 
 export interface RemoteScanOptions { active?: boolean; timeoutMs?: number; headers?: Record<string, string> }
 
@@ -41,7 +42,7 @@ export async function scanRemote(target: string, opts: RemoteScanOptions = {}): 
     req(target, {
       method: "POST",
       headers: { "content-type": "application/json", accept: "application/json, text/event-stream", "mcp-protocol-version": "2026-07-28", ...(token ? { authorization: `Bearer ${token}` } : {}) },
-      body: JSON.stringify({ jsonrpc: "2.0", id, method, params: method === "initialize" ? { protocolVersion: "2026-07-28", capabilities: {}, clientInfo: { name: "mandat-scan", version: "0.1.0" } } : {} }),
+      body: JSON.stringify({ jsonrpc: "2.0", id, method, params: method === "initialize" ? { protocolVersion: "2026-07-28", capabilities: {}, clientInfo: { name: "mandat-scan", version: VERSION } } : {} }),
     });
 
   // 1. Transport
