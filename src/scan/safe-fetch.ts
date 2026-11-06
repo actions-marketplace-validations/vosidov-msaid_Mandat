@@ -82,11 +82,16 @@ export function createSafeFetch(opts: SafeFetchOptions = {}): typeof fetch {
           chunks.push(c);
         });
         res.on("end", () => {
-          const status = res.statusCode ?? 502;
-          const h = new Headers();
-          for (const [k, v] of Object.entries(res.headers)) if (v !== undefined) h.set(k, Array.isArray(v) ? v.join(", ") : v);
-          const noBody = status === 204 || status === 304 || (status >= 100 && status < 200);
-          resolveRes(new Response(noBody ? null : Buffer.concat(chunks), { status: status < 200 ? 200 : status, headers: h }));
+          // A throw here would be uncaught and kill the process: a hostile server chooses the status and headers.
+          try {
+            const status = res.statusCode ?? 502;
+            const h = new Headers();
+            for (const [k, v] of Object.entries(res.headers)) if (v !== undefined) h.set(k, Array.isArray(v) ? v.join(", ") : v);
+            const noBody = status === 204 || status === 304 || (status >= 100 && status < 200);
+            resolveRes(new Response(noBody ? null : Buffer.concat(chunks), { status: status < 200 ? 200 : status, headers: h }));
+          } catch (e) {
+            reject(e);
+          }
         });
         res.on("error", reject);
       });
