@@ -65,6 +65,19 @@ test("sts: rejects bad client, unknown version, foreign resource, over-broad too
   await assert.rejects(sts.exchange(form({ subject_token: foreign }), { id: "support-bot", secret: "s1" }), (e) => code(e) === "invalid_grant");
 });
 
+test("sts: a sub-agent cannot widen enum or equals limits", async () => {
+  const { sts } = makeSts();
+  const id = sts.devLogin({ sub: "user:maria" });
+  const parent = await sts.exchange(form({ subject_token: id, authorization_details: '[{"type":"mandat_tool_call","tools":["refund"],"limits":{"currency":{"enum":["EUR","USD"]},"country":{"equals":"DE"}}}]' }), { id: "support-bot", secret: "s1" });
+  const child = await sts.exchange(
+    new URLSearchParams({ grant_type: GRANT_TOKEN_EXCHANGE, subject_token: parent.access_token as string, subject_token_type: TT_ACCESS_TOKEN, resource: "https://mcp.test/mcp", authorization_details: '[{"type":"mandat_tool_call","tools":["refund"],"limits":{"currency":{"enum":["EUR","BTC"]},"country":{"equals":"XX"}}}]' }),
+    { id: "billing-bot", secret: "s2" },
+  );
+  const limits = (decodeJwt(child.access_token as string).payload.authorization_details as any)[0].limits;
+  assert.deepEqual(limits.currency.enum, ["EUR"]);
+  assert.equal(limits.country.equals, "DE");
+});
+
 test("sts: nested delegation keeps the user, nests act, and can only narrow", async () => {
   const { sts } = makeSts();
   const id = sts.devLogin({ sub: "user:maria" });

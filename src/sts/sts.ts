@@ -271,6 +271,8 @@ export class Sts {
             ...pl, ...cl,
             ...(pl.max !== undefined ? { max: Math.min(pl.max, cl.max ?? Infinity) } : {}),
             ...(pl.min !== undefined ? { min: Math.max(pl.min, cl.min ?? -Infinity) } : {}),
+            ...(pl.enum !== undefined ? { enum: pl.enum.filter((v) => !cl.enum || cl.enum.includes(v)) } : {}),
+            ...(pl.equals !== undefined ? { equals: pl.equals } : {}),
           };
         }
       }
