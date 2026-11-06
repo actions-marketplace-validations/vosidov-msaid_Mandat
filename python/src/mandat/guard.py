@@ -304,7 +304,7 @@ class Guard:
             raise deny("drift", f"Tool '{tool}' changed since it was pinned; re-approve its definition with `mandat pin`", None)
 
         decision = policy.evaluate({
-            "principal": {**auth.principal, **{k: auth.claims[k] for k in ("scope", "client_id", "email") if k in auth.claims}},
+            "principal": {**auth.principal, **{k: auth.claims[k] for k in ("client_id", "email") if k in auth.claims}},
             "agent": auth.agent,
             "actor_chain": [{"sub": s} for s in auth.actor_chain],
             "tool": {"name": tool, "server": self.resource},

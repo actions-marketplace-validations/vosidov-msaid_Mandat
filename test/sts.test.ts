@@ -65,6 +65,15 @@ test("sts: rejects bad client, unknown version, foreign resource, over-broad too
   await assert.rejects(sts.exchange(form({ subject_token: foreign }), { id: "support-bot", secret: "s1" }), (e) => code(e) === "invalid_grant");
 });
 
+test("sts: an agent cannot give itself a scope", async () => {
+  const { sts } = makeSts();
+  const request = form({ subject_token: sts.devLogin({ sub: "user:maria" }) });
+  request.set("scope", "admin:everything");
+  const r = await sts.exchange(request, { id: "support-bot", secret: "s1" });
+  assert.equal(r.scope, undefined);
+  assert.equal(decodeJwt(r.access_token as string).payload.scope, undefined);
+});
+
 test("sts: a sub-agent cannot move a token to another resource", async () => {
   const { sts } = makeSts();
   const id = sts.devLogin({ sub: "user:maria" });

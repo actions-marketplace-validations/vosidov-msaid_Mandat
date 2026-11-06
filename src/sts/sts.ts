@@ -154,7 +154,6 @@ export class Sts {
       tenant: subject.tenant,
       session_id: form.get("mandat_session_id"),
     };
-    const scope = form.get("scope");
     const payload: JwtPayload = {
       iss: this.opts.issuer,
       sub: subject.sub,
@@ -167,7 +166,6 @@ export class Sts {
       act,
       authorization_details: details,
       mandat,
-      ...(scope ? { scope } : {}),
       ...(subject.email ? { email: subject.email } : {}),
     };
     // RFC 9068 typ distinguishes access tokens from ID tokens signed by the same key.
@@ -186,7 +184,6 @@ export class Sts {
       token_type: "Bearer",
       expires_in: ttl,
       authorization_details: details,
-      ...(scope ? { scope } : {}),
     };
   }
 

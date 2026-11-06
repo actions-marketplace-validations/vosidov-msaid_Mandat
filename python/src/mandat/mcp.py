@@ -45,11 +45,10 @@ class MandatTokenVerifier:
         except AuthError:
             return None
         c = auth.claims
-        scope = c.get("scope")
         return AccessToken(
             token=token,
             client_id=auth.agent["id"],
-            scopes=scope.split() if isinstance(scope, str) else [],
+            scopes=[],
             expires_at=c.get("exp"),
             resource=self.guard.resource,
             subject=auth.principal["sub"],

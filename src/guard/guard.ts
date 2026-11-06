@@ -230,7 +230,7 @@ export class Guard {
           return {
             token,
             clientId: auth.agent.id,
-            scopes: typeof auth.claims.scope === "string" ? auth.claims.scope.split(" ") : [],
+            scopes: [],
             expiresAt: auth.claims.exp,
             resource: new URL(this.opts.resource),
             extra: { mandat: auth },
@@ -392,6 +392,6 @@ export class Guard {
 /** Selected token claims exposed to policies as principal.* (never the raw token). */
 function pickClaims(c: JwtPayload): Record<string, unknown> {
   const out: Record<string, unknown> = {};
-  for (const k of ["scope", "client_id", "email"]) if (c[k] !== undefined) out[k] = c[k];
+  for (const k of ["client_id", "email"]) if (c[k] !== undefined) out[k] = c[k];
   return out;
 }
