@@ -205,7 +205,8 @@ export function createControlPlane(config: ControlPlaneConfig): ControlPlane {
         return sendJson(res, 200, await sts.exchange(form, { id, secret }), { pragma: "no-cache" });
       } catch (e) {
         if (e instanceof OAuthError) {
-          recordRejected("token.denied", `${e.error}|${id ?? "-"}`, { code: e.error, reason: e.message, client_id: id ?? null, ip: ipOf(req) });
+          // The client_id is unauthenticated here: never let it pick the rate-limit key or its own size.
+          recordRejected("token.denied", `${e.error}|${ipOf(req)}`, { code: e.error, reason: e.message.slice(0, 300), client_id: id?.slice(0, 100) ?? null, ip: ipOf(req) });
           return sendJson(res, e.status, { error: e.error, error_description: e.message }, e.status === 401 ? { "www-authenticate": 'Basic realm="mandat"' } : {});
         }
         throw e;

@@ -84,6 +84,11 @@ class _Session:
     touched: float = field(default_factory=time.monotonic)
 
 
+def _clip(v: Any) -> str | int | float | None:
+    """Bounds a value taken from an unverified token before it reaches the ledger."""
+    return v[:200] if isinstance(v, str) else v if isinstance(v, (int, float)) else None
+
+
 class _RateGate:
     """One event per key per window; counts the rest (so floods of bad tokens don't flood the ledger)."""
 
@@ -213,17 +218,18 @@ class Guard:
         except JwtError:
             c = {}
         agent = (c.get("act") or {}).get("sub") if isinstance(c.get("act"), dict) else None
-        suppressed = self._reject_gate.allow(f"{e.reason}|{agent}|{c.get('sub')}")
+        # Keyed on the reason alone: everything inside the token is chosen by whoever sent it.
+        suppressed = self._reject_gate.allow(e.reason)
         if suppressed is None:
             return
         self._append({
             "type": "auth.rejected",
             "details": {
                 "code": e.reason,
-                "reason": str(e),
+                "reason": str(e)[:300],
                 "resource": self.resource,
                 # From a token that failed verification: informative only, never proof of identity.
-                "unverified_claims": {"iss": c.get("iss"), "sub": c.get("sub"), "agent": agent, "jti": c.get("jti"), "exp": c.get("exp")},
+                "unverified_claims": {"iss": _clip(c.get("iss")), "sub": _clip(c.get("sub")), "agent": _clip(agent), "jti": _clip(c.get("jti")), "exp": _clip(c.get("exp"))},
                 "suppressed_before": suppressed,
             },
         })

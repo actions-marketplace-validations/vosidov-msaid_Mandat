@@ -130,6 +130,17 @@ test("rejected logins are audited at the guard, the STS and the API (rate-limite
   assert.ok(report.rejected_auth.total >= 4);
 });
 
+test("anonymous token requests cannot grow the ledger with made-up client ids", async () => {
+  const before = cp.ledger.length;
+  for (let i = 0; i < 5; i++) {
+    const body = new URLSearchParams({ grant_type: "urn:ietf:params:oauth:grant-type:token-exchange", client_id: `flood-${i}-${"z".repeat(50_000)}` });
+    assert.equal((await fetch(`${issuer}/oauth/token`, { method: "POST", body })).status, 401);
+  }
+  const added = cp.ledger.read().slice(before);
+  assert.ok(added.length <= 1, "one record per reason and source");
+  assert.ok(JSON.stringify(added).length < 1500);
+});
+
 test("agent secrets: rotate (old secret and its tokens stop working) and remove", async () => {
   const reg = await admin("POST", "/api/agents", { id: "rotate-me", allowed_tools: ["lookup_*"], allowed_resources: [resource] });
   const subject = await devLogin(issuer, { sub: "user:x" });

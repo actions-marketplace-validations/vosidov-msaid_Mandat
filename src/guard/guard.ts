@@ -173,16 +173,17 @@ export class Guard {
     let c: JwtPayload = {};
     try { c = decodeJwt(token).payload; } catch { /* not even a JWT */ }
     const agent = (c.act as { sub?: string } | undefined)?.sub ?? null;
-    const suppressed = this.rejectGate.allow(`${e.reason}|${agent}|${String(c.sub)}`);
+    // Keyed on the reason alone: everything inside the token is chosen by whoever sent it.
+    const suppressed = this.rejectGate.allow(e.reason);
     if (suppressed === null) return;
     this.append({
       type: "auth.rejected",
       details: {
         code: e.reason,
-        reason: e.message,
+        reason: e.message.slice(0, 300),
         resource: this.opts.resource,
         // Taken from a token that failed verification: informative only, never proof of identity.
-        unverified_claims: { iss: c.iss ?? null, sub: c.sub ?? null, agent, jti: c.jti ?? null, exp: c.exp ?? null },
+        unverified_claims: { iss: clip(c.iss), sub: clip(c.sub), agent: clip(agent), jti: clip(c.jti), exp: clip(c.exp) },
         suppressed_before: suppressed,
       },
     });
@@ -387,6 +388,11 @@ export class Guard {
       this.log(`Ledger append failed: ${(e as Error).message}`);
     }
   }
+}
+
+/** Bounds a value taken from an unverified token before it reaches the ledger. */
+function clip(v: unknown): string | number | null {
+  return typeof v === "string" ? v.slice(0, 200) : typeof v === "number" ? v : null;
 }
 
 /** Selected token claims exposed to policies as principal.* (never the raw token). */

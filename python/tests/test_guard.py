@@ -126,6 +126,13 @@ class GuardTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((auth.principal["sub"], auth.agent["id"], auth.actor_chain), ("user:maria", "support-bot", ["support-bot"]))
         self.assertTrue(any(r["type"] == "auth.rejected" and r["details"]["code"] == "bad_aud" for r in self.ledger.records))
 
+    async def test_flood_of_made_up_tokens_writes_one_short_record(self) -> None:
+        for i in range(50):
+            with self.assertRaises(AuthError):
+                await self.guard.verify(self.signer.token(header={"alg": "none"}, sub=f"user-{i}-{'x' * 5000}"))
+        self.assertEqual(len(self.ledger.records), 1)
+        self.assertLess(len(json.dumps(self.ledger.records[0])), 1500)
+
     async def test_allow_deny_and_one_record_per_call(self) -> None:
         auth = await self.guard.verify(self.signer.token())
         self.assertEqual(await self.guard.execute(auth, "refund", {"amount": 10}, lambda: "done"), "done")
