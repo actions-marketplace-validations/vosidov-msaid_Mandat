@@ -65,6 +65,16 @@ test("sts: rejects bad client, unknown version, foreign resource, over-broad too
   await assert.rejects(sts.exchange(form({ subject_token: foreign }), { id: "support-bot", secret: "s1" }), (e) => code(e) === "invalid_grant");
 });
 
+test("sts: a sub-agent cannot move a token to another resource", async () => {
+  const { sts } = makeSts();
+  const id = sts.devLogin({ sub: "user:maria" });
+  const parent = await sts.exchange(form({ subject_token: id }), { id: "support-bot", secret: "s1" });
+  await assert.rejects(
+    sts.exchange(new URLSearchParams({ grant_type: GRANT_TOKEN_EXCHANGE, subject_token: parent.access_token as string, subject_token_type: TT_ACCESS_TOKEN, resource: "https://other.test/mcp" }), { id: "billing-bot", secret: "s2" }),
+    (e: OAuthError) => e.error === "invalid_target",
+  );
+});
+
 test("sts: a sub-agent cannot widen enum or equals limits", async () => {
   const { sts } = makeSts();
   const id = sts.devLogin({ sub: "user:maria" });

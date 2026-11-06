@@ -127,6 +127,7 @@ export class Sts {
 
     const subject = await this.verifySubject(subjectToken);
     const parent = subject.mandatParent;
+    if (parent && parent.aud !== resource) throw new OAuthError("invalid_target", "A sub-agent's token must be for the same resource as its parent's");
 
     const blocked = blocksIssuance(this.opts.revocations(), { agent: agent.id, version, sub: subject.sub, tenant: subject.tenant });
     if (blocked) throw new OAuthError("access_denied", `Issuance blocked by revocation ${blocked.id} (${blocked.type}: ${blocked.value})`, 403);
