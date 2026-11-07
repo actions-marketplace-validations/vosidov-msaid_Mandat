@@ -9,7 +9,7 @@
 // The user's own token is never forwarded downstream: resource servers only see Mandat tokens.
 
 import { createPublicKey, type KeyObject } from "node:crypto";
-import { JwksClient, JwtError, signJwt, verifyJwt, type JwtPayload, type SigningKey } from "./jwt.ts";
+import { JwksClient, JwtError, decodeJwt, signJwt, verifyJwt, type JwtPayload, type SigningKey } from "./jwt.ts";
 import { blocksIssuance, matchRevocation, type ActClaim, type MandatClaim, type Revocation } from "./revocation.ts";
 import type { AuthorizationDetail } from "../policy/engine.ts";
 import { globMatch, nowSeconds, randomId, safeEqual, sha256 } from "../util.ts";
@@ -190,7 +190,7 @@ export class Sts {
   private async verifySubject(token: string): Promise<{ sub: string; tenant: string | null; email?: string; mandatParent?: JwtPayload }> {
     let iss: unknown;
     try {
-      iss = JSON.parse(Buffer.from(token.split(".")[1] ?? "", "base64url").toString("utf8")).iss;
+      iss = decodeJwt(token).payload.iss;
     } catch {
       throw new OAuthError("invalid_grant", "subject_token is not a JWT");
     }
@@ -219,9 +219,7 @@ export class Sts {
    * agent tokens are deliberately not accepted here: anyone can mint the former.
    */
   async verifyIdpToken(token: string): Promise<{ iss: string; sub: string; email?: string; email_verified?: boolean; tenant: string | null }> {
-    let iss: unknown;
-    try { iss = JSON.parse(Buffer.from(token.split(".")[1] ?? "", "base64url").toString("utf8")).iss; } catch { throw new JwtError("malformed", "Not a JWT"); }
-    return this.verifyTrusted(token, iss);
+    return this.verifyTrusted(token, decodeJwt(token).payload.iss);
   }
 
   private async verifyTrusted(token: string, iss: unknown): Promise<{ iss: string; sub: string; email?: string; email_verified?: boolean; tenant: string | null }> {
