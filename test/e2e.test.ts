@@ -128,6 +128,16 @@ test("e2e: stats, activity and export answer from the running ledger", async () 
   assert.ok(lines.every((l) => JSON.parse(l).type === "agent.tool_call"));
 });
 
+test("audit queue: records dropped during a long outage are counted and reported", () => {
+  const logged: string[] = [];
+  const sink = new HttpLedgerSink({ url: "http://127.0.0.1:1", apiKey: "k", log: (m) => logged.push(m) }, { flushIntervalMs: 3_600_000 });
+  for (let i = 0; i < 100_003; i++) sink.append({ type: "agent.tool_call" });
+  assert.equal(sink.dropped, 3);
+  assert.equal(logged.length, 1);
+  assert.match(logged[0]!, /Audit queue is full/);
+  void sink.close();
+});
+
 test("e2e: ingest is idempotent (at-least-once delivery without duplicates)", async () => {
   const rec = { id: "rec_fixed_1", type: "agent.tool_call", tool: { name: "x" } };
   const a = await api(keys.service, "POST", "/api/ledger/ingest", { records: [rec] });

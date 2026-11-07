@@ -16,6 +16,7 @@ from cryptography.hazmat.primitives.asymmetric.utils import decode_dss_signature
 
 from mandat import AuthError, Guard, GuardDenied, MemoryLedger, StaticPolicy, compile_policy
 from mandat.jwt import JwksClient
+from mandat.remote import ControlPlane, HttpLedger
 from mandat.revocation import match_revocation
 
 ISSUER = "https://mandat.test"
@@ -93,6 +94,17 @@ class LocalApprovals:
     def approve(self, approval_id):
         self.items[approval_id]["status"] = "approved"
         self.items[approval_id]["votes"].append({"by": "alice", "decision": "approve"})
+
+
+class AuditQueueTests(unittest.TestCase):
+    def test_dropped_records_are_counted_and_reported(self) -> None:
+        logged: list[str] = []
+        sink = HttpLedger(ControlPlane("http://127.0.0.1:1", "k", log=logged.append), flush_interval=3600)
+        for _ in range(100_003):
+            sink.append({"type": "agent.tool_call"})
+        self.assertEqual(sink.dropped, 3)
+        self.assertEqual(len(logged), 1)
+        self.assertIn("Audit queue is full", logged[0])
 
 
 class JwksTests(unittest.IsolatedAsyncioTestCase):
