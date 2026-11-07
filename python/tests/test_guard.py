@@ -15,6 +15,7 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.asymmetric.utils import decode_dss_signature
 
 from mandat import AuthError, Guard, GuardDenied, MemoryLedger, StaticPolicy, compile_policy
+from mandat.jwt import JwksClient
 from mandat.revocation import match_revocation
 
 ISSUER = "https://mandat.test"
@@ -92,6 +93,17 @@ class LocalApprovals:
     def approve(self, approval_id):
         self.items[approval_id]["status"] = "approved"
         self.items[approval_id]["votes"].append({"by": "alice", "decision": "approve"})
+
+
+class JwksTests(unittest.IsolatedAsyncioTestCase):
+    async def test_cached_keys_survive_an_outage(self) -> None:
+        client = JwksClient("http://127.0.0.1:1/jwks", ttl=0, min_refresh=0)
+        client._keys = {"k1": Signer().key.public_key()}
+        client._fetched_at = time.monotonic() - 10
+        self.assertIsNotNone(await client.get_key("k1"))
+        client._keys, client._fetched_at = {}, 0.0
+        with self.assertRaises(OSError):
+            await client.get_key("k1")
 
 
 class GuardTests(unittest.IsolatedAsyncioTestCase):

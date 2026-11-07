@@ -1,7 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createPublicKey, generateKeyPairSync } from "node:crypto";
-import { decodeJwt, signJwt, verifyJwt, JwtError } from "../src/sts/jwt.ts";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
+import { JwksClient, decodeJwt, signJwt, verifyJwt, JwtError } from "../src/sts/jwt.ts";
 import { Sts, OAuthError, hashSecret, GRANT_TOKEN_EXCHANGE, TT_ACCESS_TOKEN, TT_ID_TOKEN, type AgentRecord } from "../src/sts/sts.ts";
 import { matchRevocation, type Revocation } from "../src/sts/revocation.ts";
 import { nowSeconds } from "../src/util.ts";
@@ -23,6 +25,20 @@ test("jwt: sign/verify ES256 and reject tampering, wrong aud, expiry, alg confus
   await assert.rejects(verifyJwt(old, () => pub), (e: JwtError) => e.code === "expired");
   const rsa = generateKeyPairSync("rsa", { modulusLength: 2048 }).publicKey;
   await assert.rejects(verifyJwt(tok, () => rsa), (e: JwtError) => e.code === "bad_alg");
+});
+
+test("jwks: cached keys keep working through an outage; with no keys the failure surfaces", async () => {
+  const k = testKey();
+  const srv = createServer((_req, res) => { res.setHeader("content-type", "application/json"); res.end(JSON.stringify({ keys: [k.publicJwk] })); });
+  await new Promise<void>((r) => srv.listen(0, "127.0.0.1", () => r()));
+  const url = `http://127.0.0.1:${(srv.address() as AddressInfo).port}/jwks`;
+  const client = new JwksClient(url, 20, 5);
+  assert.ok(await client.getKey(k.kid));
+  srv.closeAllConnections();
+  await new Promise((r) => srv.close(r));
+  await new Promise((r) => setTimeout(r, 40));
+  assert.ok(await client.getKey(k.kid), "the TTL passed while the server was down");
+  await assert.rejects(new JwksClient(url).getKey(k.kid));
 });
 
 function makeSts(revs: Revocation[] = []) {
