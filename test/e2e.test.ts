@@ -9,6 +9,7 @@ import { join } from "node:path";
 import { createControlPlane, createGuard, McpHttpServer, McpHttpClient, exchangeToken, devLogin, hashApiKey, scanRemote, protect, RemoteRevocations, type ControlPlane, type Guard } from "../src/index.ts";
 import { STARTER_POLICY } from "../src/cli/templates.ts";
 import { tools } from "../examples/refund-server/tools.ts";
+import { HttpLedgerSink } from "../src/guard/remote.ts";
 
 const port = () => new Promise<number>((r) => { const s = createServer(); s.listen(0, "127.0.0.1", () => { const p = (s.address() as { port: number }).port; s.close(() => r(p)); }); });
 const keys = { admin: "mdt_admin_test_key_000000000000", approver: "mdt_approver_test_key_0000000", service: "mdt_service_test_key_00000000" };
@@ -106,6 +107,13 @@ test("e2e: a guard with a key the control plane rejects fails loudly", async () 
   revs.close();
   assert.equal(warnings.length, 1);
   assert.match(warnings[0]!, /rejected this guard's API key \(HTTP 401\); revocations cannot be refreshed/);
+});
+
+test("e2e: a backlog of large audit records is delivered, not stuck", async () => {
+  const sink = new HttpLedgerSink({ url: issuer, apiKey: keys.service }, { flushIntervalMs: 3_600_000 });
+  for (let i = 0; i < 200; i++) sink.append({ type: "agent.tool_call", args: { body: "e".repeat(50_000) } });
+  await sink.close();
+  assert.equal(sink.pending, 0, sink.lastError ?? "");
 });
 
 test("e2e: ingest is idempotent (at-least-once delivery without duplicates)", async () => {

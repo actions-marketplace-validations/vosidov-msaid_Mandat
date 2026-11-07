@@ -168,8 +168,8 @@ export function createControlPlane(config: ControlPlaneConfig): ControlPlane {
     const url = new URL(req.url ?? "/", issuer);
     const p = url.pathname;
     const m = req.method ?? "GET";
-    const json = async <T>() => {
-      const text = await readBody(req);
+    const json = async <T>(limit?: number) => {
+      const text = await readBody(req, limit);
       try { return (text ? JSON.parse(text) : {}) as T; } catch { throw new HttpError(400, "invalid_json", "Body must be JSON"); }
     };
 
@@ -460,7 +460,8 @@ export function createControlPlane(config: ControlPlaneConfig): ControlPlane {
 
     if (m === "POST" && p === "/api/ledger/ingest") {
       const k = await authenticate(req, ["service"]);
-      const b = await json<{ records?: RecordInput[] }>();
+      // A guard retries a refused batch forever, so this must fit 200 records with the largest allowed args.
+      const b = await json<{ records?: RecordInput[] }>(25_000_000);
       if (!Array.isArray(b.records) || b.records.length > 1000) throw new HttpError(400, "invalid_request", "records: array of <= 1000");
       let appended = 0;
       for (const r of b.records) {

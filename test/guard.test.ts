@@ -49,6 +49,17 @@ test("guard: allow, deny, one ledger record per call with redacted args", async 
   g.close();
 });
 
+test("guard: oversized args are recorded as a hash, so audit delivery cannot stall", async () => {
+  const g = embeddedGuard(REFUND_POLICY);
+  const auth = await g.guard.verify(taskToken(g.key));
+  const args = Object.fromEntries(Array.from({ length: 300 }, (_, i) => [`k${i}`, "y".repeat(4000)]));
+  await g.guard.execute({ auth, tool: "lookup", args }, ok);
+  const logged = JSON.stringify(g.ledger.records.at(-1)!.args);
+  assert.match(logged, /"\[truncated\]":"sha256:/);
+  assert.ok(logged.length < 200);
+  g.close();
+});
+
 test("guard: handler errors are recorded and re-thrown", async () => {
   const g = embeddedGuard(REFUND_POLICY);
   const auth = await g.guard.verify(taskToken(g.key));

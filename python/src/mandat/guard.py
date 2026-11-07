@@ -23,7 +23,7 @@ from typing import Any, Awaitable, Callable
 
 from .jwt import JwksClient, JwtError, decode_jwt, verify_jwt
 from .policy import HIGH_RISK, CompiledPolicy, Decision, canonical_json
-from .redact import redact
+from .redact import hash_value, redact
 from .remote import (
     ControlPlane,
     FilePolicy,
@@ -82,6 +82,10 @@ class _Session:
     taint_sources: list[str] = field(default_factory=list)
     calls: int = 0
     touched: float = field(default_factory=time.monotonic)
+
+
+# Keeps every record far below the size of an ingest batch (see /api/ledger/ingest).
+_MAX_RECORDED_ARGS_BYTES = 100_000
 
 
 def _clip(v: Any) -> str | int | float | None:
@@ -387,7 +391,8 @@ class Guard:
         fields = [f for o in obligations if o.get("type") == "redact" for f in o.get("fields", [])]
         opts = dict(self.redaction)
         opts["fields"] = [*opts.get("fields", []), *fields]
-        return redact(args, **opts)
+        out = redact(args, **opts)
+        return {"[truncated]": hash_value(args)} if len(json.dumps(out, default=str).encode()) > _MAX_RECORDED_ARGS_BYTES else out
 
     def _append(self, rec: dict[str, Any]) -> None:
         try:

@@ -14,7 +14,7 @@ import { RateGate } from "../util.ts";
 import { actorChain, matchRevocation, type MandatClaim, type Revocation } from "../sts/revocation.ts";
 import { HIGH_RISK, type AuthorizationDetail, type CompiledPolicy, type Decision, type Obligation } from "../policy/engine.ts";
 import { approvalBinding, type ApprovalRequest, type ApprovalService, type NewApproval } from "../approvals/approvals.ts";
-import { redact, type RedactionOptions } from "../ledger/redact.ts";
+import { hashValue, redact, type RedactionOptions } from "../ledger/redact.ts";
 import type { ActionRecord, LedgerSink, RecordInput } from "../ledger/ledger.ts";
 import { checkPins, toolHash, type DriftReport, type ToolDefinition } from "./pinning.ts";
 
@@ -129,6 +129,8 @@ export class GuardDenied extends Error {
 interface SessionState { tainted: boolean; taint_sources: string[]; calls: number; touched: number }
 
 const SESSION_TTL_MS = 6 * 3_600_000;
+/** Keeps every record far below the size of an ingest batch (see /api/ledger/ingest). */
+const MAX_RECORDED_ARGS_BYTES = 100_000;
 
 export class Guard {
   readonly opts: GuardOptions;
@@ -378,7 +380,8 @@ export class Guard {
 
   private redactArgs(args: Record<string, unknown>, obligations: Obligation[]): unknown {
     const fields = obligations.filter((o) => o.type === "redact").flatMap((o) => o.fields ?? []);
-    return redact(args, { ...this.opts.redaction, fields: [...(this.opts.redaction?.fields ?? []), ...fields] });
+    const out = redact(args, { ...this.opts.redaction, fields: [...(this.opts.redaction?.fields ?? []), ...fields] });
+    return Buffer.byteLength(JSON.stringify(out)) > MAX_RECORDED_ARGS_BYTES ? { "[truncated]": hashValue(args) } : out;
   }
 
   private append(rec: RecordInput): ActionRecord | void {

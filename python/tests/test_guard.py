@@ -133,6 +133,14 @@ class GuardTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.ledger.records), 1)
         self.assertLess(len(json.dumps(self.ledger.records[0])), 1500)
 
+    async def test_oversized_args_are_recorded_as_a_hash(self) -> None:
+        auth = await self.guard.verify(self.signer.token())
+        args = {f"k{i}": "y" * 4000 for i in range(300)}
+        await self.guard.execute(auth, "lookup", args, lambda: "ok")
+        logged = self.ledger.records[-1]["args"]
+        self.assertEqual(list(logged), ["[truncated]"])
+        self.assertTrue(logged["[truncated]"].startswith("sha256:"))
+
     async def test_allow_deny_and_one_record_per_call(self) -> None:
         auth = await self.guard.verify(self.signer.token())
         self.assertEqual(await self.guard.execute(auth, "refund", {"amount": 10}, lambda: "done"), "done")
