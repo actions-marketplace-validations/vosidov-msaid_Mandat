@@ -39,6 +39,8 @@ const REVOCATION_TYPES: RevocationType[] = ["jti", "agent", "agent_version", "su
 const MAX_REPORT_LEDGER_BYTES = 500_000_000;
 
 export function createControlPlane(config: ControlPlaneConfig): ControlPlane {
+  const localOnly = ["127.0.0.1", "localhost", "::1"].includes(config.host ?? "127.0.0.1") && !config.issuer.startsWith("https:");
+  if (config.devIdp && !localOnly) throw new Error("devIdp lets anyone sign in as any user, so it only runs on a local address. Set \"devIdp\": false in the config, or run `mandat idp add` with --disable-dev-idp.");
   const issuer = config.issuer.replace(/\/$/, "");
   const consoleUrl = `${issuer}/console`;
   const key = loadOrCreateSigningKey(join(config.dataDir, "keys"));

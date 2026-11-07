@@ -86,6 +86,12 @@ test("console sign-in: IdP login sets a session; access requires an explicit rol
   assert.equal((await call("GET", "/api/whoami", { cookie })).status, 401);
 });
 
+test("the dev IdP refuses to start anywhere but a local address", () => {
+  const config = { port: 0, dataDir: "unused", policyFile: "unused", devIdp: true, apiKeys: [] };
+  assert.throws(() => createControlPlane({ ...config, issuer: "http://127.0.0.1:1", host: "0.0.0.0" }), /only runs on a local address/);
+  assert.throws(() => createControlPlane({ ...config, issuer: "https://mandat.acme.example" }), /only runs on a local address/);
+});
+
 test("console sign-in: a login link from another browser does not sign you in", async () => {
   const start = await fetch(`${issuer}/auth/login`, { redirect: "manual" });
   const back = await fetch(start.headers.get("location")!, { redirect: "manual" });
