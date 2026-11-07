@@ -36,6 +36,7 @@ export interface Principal {
 
 export const HUMAN_ROLES: Role[] = ["admin", "approver", "auditor"];
 export const SESSION_COOKIE = "mandat_session";
+const LOGIN_COOKIE = "mandat_login";
 const SESSION_TTL_MS = 8 * 3_600_000;
 const LOGIN_TTL_MS = 10 * 60_000;
 
@@ -78,7 +79,7 @@ export class HumanAuth {
 
   // ---------- browser login ----------
 
-  async startLogin(): Promise<string> {
+  async startLogin(): Promise<{ url: string; state: string }> {
     if (!this.login) throw new HttpError(404, "login_disabled", "No identity provider configured: run `mandat idp add` first");
     this.meta ??= await discover(this.login.issuer);
     const now = Date.now();
@@ -88,18 +89,21 @@ export class HumanAuth {
     const { verifier, challenge } = pkcePair();
     this.pending.set(state, { verifier, nonce, exp: now + LOGIN_TTL_MS });
     // No offline_access: the console session is short-lived and needs no refresh token.
-    return authorizeUrl(this.meta, { clientId: this.login.clientId, redirectUri: this.redirectUri, state, nonce, challenge, scopes: ["openid", "profile", "email"] }).toString();
+    return { url: authorizeUrl(this.meta, { clientId: this.login.clientId, redirectUri: this.redirectUri, state, nonce, challenge, scopes: ["openid", "profile", "email"] }).toString(), state };
   }
 
-  /** Completes the login and returns the new session id. */
-  async finishLogin(params: URLSearchParams): Promise<{ sessionId: string; who: string }> {
+  /**
+   * Completes the login and returns the new session id. The cookie from `loginCookie` proves this browser
+   * started the login; without it, an attacker could sign a victim in to the attacker's account with a link.
+   */
+  async finishLogin(params: URLSearchParams, cookieHeader: string | undefined): Promise<{ sessionId: string; who: string }> {
     if (!this.login || !this.meta) throw new HttpError(400, "login_not_started", "Start the login from the console");
     const err = params.get("error");
     if (err) throw new HttpError(400, err, params.get("error_description") ?? err);
     const state = params.get("state") ?? "";
     const p = this.pending.get(state);
     this.pending.delete(state);
-    if (!p || p.exp < Date.now()) throw new HttpError(400, "invalid_state", "Login expired or state mismatch; start again from the console");
+    if (!p || p.exp < Date.now() || readCookie(cookieHeader, LOGIN_COOKIE) !== state) throw new HttpError(400, "invalid_state", "Login expired or state mismatch; start again from the console");
     const iss = params.get("iss");
     if (iss && iss !== this.meta.issuer) throw new HttpError(400, "invalid_issuer", `Authorization response from unexpected issuer ${iss}`);
     const code = params.get("code");
@@ -122,6 +126,12 @@ export class HumanAuth {
   logout(cookieHeader: string | undefined): void {
     const id = readCookie(cookieHeader, SESSION_COOKIE);
     if (id) this.sessions.delete(id);
+  }
+
+  /** Lax, not Strict: the browser must send it on the redirect back from the IdP, which is a cross-site navigation. */
+  loginCookie(state: string | null): string {
+    const secure = this.publicUrl.startsWith("https:") ? "; Secure" : "";
+    return `${LOGIN_COOKIE}=${state ?? ""}; HttpOnly; SameSite=Lax; Path=/auth; Max-Age=${state ? LOGIN_TTL_MS / 1000 : 0}${secure}`;
   }
 
   sessionCookie(sessionId: string | null): string {

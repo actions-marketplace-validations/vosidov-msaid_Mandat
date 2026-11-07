@@ -236,16 +236,17 @@ export function createControlPlane(config: ControlPlaneConfig): ControlPlane {
     // ----- human sign-in (console) -----
     if (m === "GET" && p === "/auth/config") return sendJson(res, 200, { enabled: humans.loginEnabled, issuer: humans.loginIssuer });
     if (m === "GET" && p === "/auth/login") {
-      res.writeHead(302, { location: await humans.startLogin(), "cache-control": "no-store" }).end();
+      const { url: location, state } = await humans.startLogin();
+      res.writeHead(302, { location, "set-cookie": humans.loginCookie(state), "cache-control": "no-store" }).end();
       return;
     }
     if (m === "GET" && p === "/auth/callback") {
       const page = (title: string, msg: string, extraHead = "") =>
         `<!doctype html><meta charset="utf-8">${extraHead}<title>${title}</title><body style="font:16px system-ui;margin:3rem"><h2>${title}</h2><p>${msg}</p><p><a href="/console">Back to the console</a></p></body>`;
       try {
-        const { sessionId } = await humans.finishLogin(url.searchParams);
+        const { sessionId } = await humans.finishLogin(url.searchParams, req.headers.cookie);
         // An HTML hop (not a 302) makes the console load a same-site navigation, so the Strict cookie applies.
-        res.writeHead(200, { "content-type": "text/html; charset=utf-8", "set-cookie": humans.sessionCookie(sessionId), "cache-control": "no-store" });
+        res.writeHead(200, { "content-type": "text/html; charset=utf-8", "set-cookie": [humans.sessionCookie(sessionId), humans.loginCookie(null)], "cache-control": "no-store" });
         res.end(page("Signed in", "Opening the console...", '<meta http-equiv="refresh" content="0;url=/console">'));
       } catch (e) {
         const msg = (e as Error).message.replace(/[<>&"]/g, "");

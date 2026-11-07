@@ -61,8 +61,10 @@ test("console sign-in: IdP login sets a session; access requires an explicit rol
   const toIdp = start.headers.get("location")!;
   assert.ok(toIdp.startsWith(`${idp.issuer}authorize`));
   assert.equal(new URL(toIdp).searchParams.get("redirect_uri"), `${issuer}/auth/callback`);
+  const loginCookie = start.headers.get("set-cookie")!.split(";")[0]!;
+  assert.match(start.headers.get("set-cookie")!, /HttpOnly; SameSite=Lax/);
   const back = await fetch(toIdp, { redirect: "manual" });
-  const callback = await fetch(back.headers.get("location")!);
+  const callback = await fetch(back.headers.get("location")!, { headers: { cookie: loginCookie } });
   assert.equal(callback.status, 200);
   const cookie = callback.headers.get("set-cookie")!.split(";")[0]!;
   assert.match(callback.headers.get("set-cookie")!, /HttpOnly; SameSite=Strict/);
@@ -82,6 +84,14 @@ test("console sign-in: IdP login sets a session; access requires an explicit rol
 
   await fetch(`${issuer}/auth/logout`, { method: "POST", headers: { cookie, "x-requested-with": "mandat" } });
   assert.equal((await call("GET", "/api/whoami", { cookie })).status, 401);
+});
+
+test("console sign-in: a login link from another browser does not sign you in", async () => {
+  const start = await fetch(`${issuer}/auth/login`, { redirect: "manual" });
+  const back = await fetch(start.headers.get("location")!, { redirect: "manual" });
+  const victim = await fetch(back.headers.get("location")!);
+  assert.equal(victim.status, 400);
+  assert.equal(victim.headers.get("set-cookie"), null);
 });
 
 test("e-mail grants need an e-mail the IdP confirms as verified; subject grants do not", () => {
