@@ -1,9 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { FileLedger, verifyLedger, verifyRecords, MemoryLedger } from "../src/ledger/ledger.ts";
+import { FileLedger, LedgerWindow, MemoryLedger, queryLedger, readLedger, verifyLedger, verifyLedgerStream, verifyRecords, type ActionRecord } from "../src/ledger/ledger.ts";
 import { redact } from "../src/ledger/redact.ts";
 import { toOcsf, toOtelSpan } from "../src/ledger/export.ts";
 import { buildReport, reportToMarkdown } from "../src/ledger/report.ts";
@@ -44,6 +44,38 @@ test("ledger: hash chain survives reopen and detects edits, deletions and reorde
   // Recomputing one record's hash does not help: the next record's prev_hash breaks.
   writeFileSync(path, edited.join("\n") + "\n");
   assert.equal(verifyLedger(path).ok, false);
+});
+
+test("ledger: files larger than the read chunk stay readable, verifiable and queryable", async () => {
+  const path = join(mkdtempSync(join(tmpdir(), "mandat-ledger-")), "ledger.jsonl");
+  const l = new FileLedger(path);
+  // Multi-byte text, so that some records straddle a chunk boundary inside a character.
+  for (let i = 0; i < 2500; i++) l.append({ type: "agent.tool_call", tool: { name: "t" }, details: { i, text: "é€".repeat(300) } });
+  assert.ok(statSync(path).size > 2 * (1 << 20));
+  const all = readLedger(path);
+  assert.equal(all.length, 2500);
+  assert.equal(all[2499]!.details!.text, "é€".repeat(300));
+  assert.equal(verifyLedger(path).ok, true);
+  assert.equal((await verifyLedgerStream(path)).count, 2500);
+  assert.deepEqual((await queryLedger(path, { limit: 2 })).map((r) => r.seq), [2500, 2499]);
+  assert.deepEqual((await queryLedger(path, { limit: 2, order: "asc" })).map((r) => r.seq), [1, 2]);
+  writeFileSync(path, readFileSync(path, "utf8").replace('"i":7,', '"i":8,'));
+  assert.equal((await verifyLedgerStream(path)).ok, false);
+});
+
+test("ledger window: bounded memory, recent ids, 24-hour counts", () => {
+  const w = new LedgerWindow();
+  const rec = (id: string, ts: string, final: "allow" | "deny") => ({ id, ts, type: "agent.tool_call", decision: { final, latency_us: 5 } }) as ActionRecord;
+  const now = new Date().toISOString();
+  w.add(rec("old", new Date(Date.now() - 48 * 3_600_000).toISOString(), "allow"));
+  w.add(rec("a", now, "allow"));
+  w.add(rec("b", now, "deny"));
+  assert.deepEqual(w.last24h(), { calls: 2, allowed: 1, denied: 1, pending: 0, p99_decision_us: 5 });
+  assert.equal(w.has("a"), true);
+  for (let i = 0; i < 50_000; i++) w.add({ id: `n${i}`, ts: now, type: "policy.changed" } as ActionRecord);
+  assert.ok(w.records.length < 40_000);
+  assert.equal(w.has("a"), false);
+  assert.equal(w.has("n49999"), true);
 });
 
 test("redaction: secrets by key, PII patterns, explicit fields, metadata-only", () => {

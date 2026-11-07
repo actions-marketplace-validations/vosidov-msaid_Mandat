@@ -116,6 +116,18 @@ test("e2e: a backlog of large audit records is delivered, not stuck", async () =
   assert.equal(sink.pending, 0, sink.lastError ?? "");
 });
 
+test("e2e: stats, activity and export answer from the running ledger", async () => {
+  const stats = await api(keys.admin, "GET", "/api/stats");
+  assert.ok(stats.body.last_24h.calls > 0);
+  assert.equal(stats.body.ledger.records, cp.ledger.length);
+  const activity = await api(keys.admin, "GET", "/api/ledger?limit=2&type=agent.tool_call");
+  assert.equal(activity.body.records.length, 2);
+  const res = await fetch(`${issuer}/api/ledger/export?format=raw&type=agent.tool_call&limit=3`, { headers: { authorization: `Bearer ${keys.admin}` } });
+  const lines = (await res.text()).trim().split("\n");
+  assert.equal(lines.length, 3);
+  assert.ok(lines.every((l) => JSON.parse(l).type === "agent.tool_call"));
+});
+
 test("e2e: ingest is idempotent (at-least-once delivery without duplicates)", async () => {
   const rec = { id: "rec_fixed_1", type: "agent.tool_call", tool: { name: "x" } };
   const a = await api(keys.service, "POST", "/api/ledger/ingest", { records: [rec] });

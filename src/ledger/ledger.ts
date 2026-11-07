@@ -5,8 +5,9 @@
 // Any edit, deletion or reordering of a past line breaks every later hash; `verifyLedger`
 // pinpoints the first broken record. One JSON object per line (JSONL).
 
-import { appendFileSync, closeSync, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readSync } from "node:fs";
+import { appendFileSync, closeSync, createReadStream, existsSync, fstatSync, mkdirSync, openSync, readSync } from "node:fs";
 import { dirname } from "node:path";
+import { createInterface } from "node:readline";
 import { canonicalJson, randomId, sha256 } from "../util.ts";
 import type { Effect, Obligation, Risk } from "../policy/engine.ts";
 
@@ -139,9 +140,44 @@ export class MemoryLedger implements LedgerSink {
   }
 }
 
+/** Reads line by line: one string cannot hold a ledger over about 512 MB. */
+export function* ledgerLines(path: string): Generator<string> {
+  if (!existsSync(path)) return;
+  const fd = openSync(path, "r");
+  try {
+    const buf = Buffer.allocUnsafe(1 << 20);
+    let tail = Buffer.alloc(0);
+    for (let n = readSync(fd, buf, 0, buf.length, null); n > 0; n = readSync(fd, buf, 0, buf.length, null)) {
+      const chunk = Buffer.concat([tail, buf.subarray(0, n)]);
+      let start = 0;
+      for (let nl = chunk.indexOf(10); nl >= 0; start = nl + 1, nl = chunk.indexOf(10, start)) {
+        if (nl > start) yield chunk.toString("utf8", start, nl);
+      }
+      tail = chunk.subarray(start);
+    }
+    if (tail.length) yield tail.toString("utf8");
+  } finally {
+    closeSync(fd);
+  }
+}
+
 export function readLedger(path: string): ActionRecord[] {
-  if (!existsSync(path)) return [];
-  return readFileSync(path, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l) as ActionRecord);
+  return Array.from(ledgerLines(path), (l) => JSON.parse(l) as ActionRecord);
+}
+
+/** Like `ledgerLines`, but gives other requests a turn while it reads. */
+async function* streamLines(path: string): AsyncGenerator<string> {
+  if (!existsSync(path)) return;
+  const input = createReadStream(path);
+  try {
+    for await (const line of createInterface({ input, crlfDelay: Infinity })) if (line) yield line;
+  } finally {
+    input.destroy();
+  }
+}
+
+export async function* streamLedger(path: string): AsyncGenerator<ActionRecord> {
+  for await (const line of streamLines(path)) yield JSON.parse(line) as ActionRecord;
 }
 
 export interface VerifyResult {
@@ -154,33 +190,55 @@ export interface VerifyResult {
   error?: string;
 }
 
-export function verifyRecords(records: Iterable<ActionRecord | string>): VerifyResult {
+/** Checks one record at a time: `next` returns a failed result at the first broken record, otherwise null. */
+function chainVerifier() {
   let prev = GENESIS_HASH;
   let count = 0;
   let first_ts: string | undefined;
   let last_ts: string | undefined;
+  return {
+    next(item: ActionRecord | string): VerifyResult | null {
+      count++;
+      let rec: ActionRecord;
+      try {
+        rec = typeof item === "string" ? JSON.parse(item) : item;
+      } catch {
+        return { ok: false, count, head: prev, broken_at: count, error: `Line ${count} is not valid JSON` };
+      }
+      const { hash, ...rest } = rec;
+      if (rec.seq !== count) return { ok: false, count, head: prev, broken_at: count, error: `Record ${count} has seq ${rec.seq} (records missing or reordered)` };
+      if (rec.prev_hash !== prev) return { ok: false, count, head: prev, broken_at: count, error: `Record ${count} prev_hash does not match previous record (chain broken)` };
+      if (computeHash(rest) !== hash) return { ok: false, count, head: prev, broken_at: count, error: `Record ${count} content does not match its hash (tampered)` };
+      prev = hash;
+      first_ts ??= rec.ts;
+      last_ts = rec.ts;
+      return null;
+    },
+    result: (): VerifyResult => ({ ok: true, count, head: prev, first_ts, last_ts }),
+  };
+}
+
+export function verifyRecords(records: Iterable<ActionRecord | string>): VerifyResult {
+  const v = chainVerifier();
   for (const item of records) {
-    count++;
-    let rec: ActionRecord;
-    try {
-      rec = typeof item === "string" ? JSON.parse(item) : item;
-    } catch {
-      return { ok: false, count, head: prev, broken_at: count, error: `Line ${count} is not valid JSON` };
-    }
-    const { hash, ...rest } = rec;
-    if (rec.seq !== count) return { ok: false, count, head: prev, broken_at: count, error: `Record ${count} has seq ${rec.seq} (records missing or reordered)` };
-    if (rec.prev_hash !== prev) return { ok: false, count, head: prev, broken_at: count, error: `Record ${count} prev_hash does not match previous record (chain broken)` };
-    if (computeHash(rest) !== hash) return { ok: false, count, head: prev, broken_at: count, error: `Record ${count} content does not match its hash (tampered)` };
-    prev = hash;
-    first_ts ??= rec.ts;
-    last_ts = rec.ts;
+    const broken = v.next(item);
+    if (broken) return broken;
   }
-  return { ok: true, count, head: prev, first_ts, last_ts };
+  return v.result();
 }
 
 export function verifyLedger(path: string): VerifyResult {
-  if (!existsSync(path)) return { ok: true, count: 0, head: GENESIS_HASH };
-  return verifyRecords(readFileSync(path, "utf8").split("\n").filter(Boolean));
+  return verifyRecords(ledgerLines(path));
+}
+
+/** `verifyLedger` for a running server: other requests keep being served during the check. */
+export async function verifyLedgerStream(path: string): Promise<VerifyResult> {
+  const v = chainVerifier();
+  for await (const line of streamLines(path)) {
+    const broken = v.next(line);
+    if (broken) return broken;
+  }
+  return v.result();
 }
 
 export interface LedgerQuery {
@@ -196,20 +254,85 @@ export interface LedgerQuery {
   order?: "asc" | "desc";
 }
 
-export function queryRecords(records: ActionRecord[], q: LedgerQuery): ActionRecord[] {
-  let out = records.filter((r) =>
-    (!q.type || r.type === q.type || (q.type === "@rejected" && REJECTED_AUTH_TYPES.includes(r.type)) ||
+export function matchesQuery(r: ActionRecord, q: LedgerQuery): boolean {
+  return (!q.type || r.type === q.type || (q.type === "@rejected" && REJECTED_AUTH_TYPES.includes(r.type)) ||
       (q.type.endsWith("*") && r.type.startsWith(q.type.slice(0, -1)))) &&
-    (!q.agent || r.agent?.id === q.agent || r.actor_chain?.includes(q.agent)) &&
+    (!q.agent || r.agent?.id === q.agent || r.actor_chain?.includes(q.agent) === true) &&
     (!q.sub || r.principal?.sub === q.sub) &&
     (!q.tool || r.tool?.name === q.tool) &&
     (!q.task || r.task_id === q.task) &&
     (!q.effect || r.decision?.effect === q.effect || r.decision?.final === q.effect) &&
     (!q.since || r.ts >= q.since) &&
-    (!q.until || r.ts <= q.until),
-  );
+    (!q.until || r.ts <= q.until);
+}
+
+export function queryRecords(records: ActionRecord[], q: LedgerQuery): ActionRecord[] {
+  let out = records.filter((r) => matchesQuery(r, q));
   if (q.order !== "asc") out = out.reverse();
   return q.limit ? out.slice(0, q.limit) : out;
+}
+
+/** Runs a query over the whole file, holding at most `limit` records in memory. */
+export async function queryLedger(path: string, q: LedgerQuery): Promise<ActionRecord[]> {
+  const out: ActionRecord[] = [];
+  for await (const r of streamLedger(path)) {
+    if (!matchesQuery(r, q)) continue;
+    out.push(r);
+    if (q.limit && out.length > q.limit) {
+      if (q.order === "asc") break;
+      out.shift();
+    }
+  }
+  return queryRecords(out, q);
+}
+
+const WINDOW_RECORDS = 20_000;
+const HOUR_MS = 3_600_000;
+const MAX_HOURLY_LATENCIES = 10_000;
+
+interface HourStats { calls: number; allowed: number; denied: number; pending: number; latencies: number[] }
+
+/** What the control plane keeps in memory so that polling and retries never re-read the ledger file. */
+export class LedgerWindow {
+  /** Between one and two times WINDOW_RECORDS of the newest records, oldest first. */
+  records: ActionRecord[] = [];
+  private ids = new Set<string>();
+  private hours = new Map<number, HourStats>();
+
+  add(r: ActionRecord): void {
+    this.ids.add(r.id);
+    this.records.push(r);
+    if (this.records.length >= 2 * WINDOW_RECORDS) for (const old of this.records.splice(0, WINDOW_RECORDS)) this.ids.delete(old.id);
+    if (r.type !== "agent.tool_call") return;
+    const hour = Math.floor(Date.parse(r.ts) / HOUR_MS);
+    const first = Math.floor(Date.now() / HOUR_MS) - 23;
+    if (!(hour >= first)) return;
+    for (const h of this.hours.keys()) if (h < first) this.hours.delete(h);
+    const s = this.hours.get(hour) ?? { calls: 0, allowed: 0, denied: 0, pending: 0, latencies: [] };
+    this.hours.set(hour, s);
+    s.calls++;
+    if (r.decision?.final === "allow") s.allowed++;
+    if (r.decision?.final === "deny") s.denied++;
+    if (r.decision?.final === "pending") s.pending++;
+    if (s.latencies.length < MAX_HOURLY_LATENCIES) s.latencies.push(r.decision?.latency_us ?? 0);
+  }
+
+  has(id: string): boolean { return this.ids.has(id); }
+
+  /** Tool calls of the current hour and the 23 before it. */
+  last24h(): Omit<HourStats, "latencies"> & { p99_decision_us: number } {
+    const first = Math.floor(Date.now() / HOUR_MS) - 23;
+    const out = { calls: 0, allowed: 0, denied: 0, pending: 0, p99_decision_us: 0 };
+    const latencies: number[] = [];
+    for (const [hour, s] of this.hours) {
+      if (hour < first) continue;
+      out.calls += s.calls; out.allowed += s.allowed; out.denied += s.denied; out.pending += s.pending;
+      latencies.push(...s.latencies);
+    }
+    latencies.sort((a, b) => a - b);
+    out.p99_decision_us = latencies[Math.min(latencies.length - 1, Math.floor(0.99 * latencies.length))] ?? 0;
+    return out;
+  }
 }
 
 function readLastLine(path: string): string | null {

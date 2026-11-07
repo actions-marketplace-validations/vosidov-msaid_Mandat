@@ -2,8 +2,10 @@
 // The data plane (Guard) never needs it on the decision path except for approvals.
 
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
+import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
 import type { ControlPlaneConfig, Role } from "./config.ts";
 import { HUMAN_ROLES, HumanAuth, type HumanUser, type Principal } from "./humans.ts";
@@ -12,7 +14,7 @@ import { Sts, OAuthError, hashSecret, GRANT_TOKEN_EXCHANGE, type AgentRecord } f
 import { loadOrCreateSigningKey, type SigningKey } from "../sts/jwt.ts";
 import type { Revocation, RevocationType } from "../sts/revocation.ts";
 import { JsonCollection } from "../store.ts";
-import { FileLedger, queryRecords, verifyLedger, type ActionRecord, type LedgerQuery, type RecordInput } from "../ledger/ledger.ts";
+import { FileLedger, LedgerWindow, ledgerLines, matchesQuery, queryLedger, queryRecords, streamLedger, verifyLedgerStream, type ActionRecord, type LedgerQuery, type RecordInput } from "../ledger/ledger.ts";
 import { OtlpExporter, toOcsf, toOtelSpan } from "../ledger/export.ts";
 import { buildReport, reportToMarkdown } from "../ledger/report.ts";
 import { ApprovalError, ApprovalService, ConsoleLogNotifier, SlackNotifier, WebhookNotifier, handleSlackInteraction, verifySlackSignature, type NewApproval, type Notifier } from "../approvals/approvals.ts";
@@ -34,6 +36,7 @@ const CONSOLE_DIR = fileURLToPath(new URL("./console/", import.meta.url));
 const asset = (name: string) => readFileSync(join(CONSOLE_DIR, name), "utf8");
 
 const REVOCATION_TYPES: RevocationType[] = ["jti", "agent", "agent_version", "subject", "task", "tenant"];
+const MAX_REPORT_LEDGER_BYTES = 500_000_000;
 
 export function createControlPlane(config: ControlPlaneConfig): ControlPlane {
   const issuer = config.issuer.replace(/\/$/, "");
@@ -45,9 +48,11 @@ export function createControlPlane(config: ControlPlaneConfig): ControlPlane {
   const otlp = config.ledger?.otlp ? new OtlpExporter({ ...config.ledger.otlp, serviceName: "mandat-control-plane" }) : null;
   if (otlp) ledger.onAppend((r) => otlp.push(r));
 
-  // Ids already in the ledger, so retried ingest batches are not duplicated (at-least-once -> exactly-once).
-  const seen = new Set(ledger.read().map((r) => r.id));
-  ledger.onAppend((r) => seen.add(r.id));
+  // Recent ids stop retried ingest batches being duplicated; recent records and hourly counts answer console polling.
+  // shortcut: startup scans the whole ledger (seconds per 100 MB); move to a database for ledgers in the tens of GB.
+  const recent = new LedgerWindow();
+  for (const line of ledgerLines(ledger.path)) recent.add(JSON.parse(line) as ActionRecord);
+  ledger.onAppend((r) => recent.add(r));
 
   if (!existsSync(config.policyFile)) throw new Error(`Policy file not found: ${config.policyFile} (run \`mandat init\`)`);
   let policyDoc = readJson<PolicyDocument>(config.policyFile);
@@ -465,7 +470,7 @@ export function createControlPlane(config: ControlPlaneConfig): ControlPlane {
       if (!Array.isArray(b.records) || b.records.length > 1000) throw new HttpError(400, "invalid_request", "records: array of <= 1000");
       let appended = 0;
       for (const r of b.records) {
-        if (r.id && seen.has(r.id)) continue;
+        if (r.id && recent.has(r.id)) continue;
         if (!r.type) continue;
         ledger.append({ ...r, source: r.source ?? k.id });
         appended++;
@@ -476,23 +481,35 @@ export function createControlPlane(config: ControlPlaneConfig): ControlPlane {
       await authenticate(req, ["auditor", "admin", "approver"]);
       const q: LedgerQuery = Object.fromEntries(url.searchParams) as LedgerQuery;
       q.limit = Math.min(Number(url.searchParams.get("limit") ?? 100) || 100, 1000);
-      return sendJson(res, 200, { records: queryRecords(ledger.read(), q), head: ledger.headHash, count: ledger.length });
+      const hits = queryRecords(recent.records, q);
+      const answered = recent.records.length >= ledger.length || (q.order !== "asc" && hits.length >= q.limit);
+      return sendJson(res, 200, { records: answered ? hits : await queryLedger(ledger.path, q), head: ledger.headHash, count: ledger.length });
     }
     if (m === "GET" && p === "/api/ledger/verify") {
       await authenticate(req, ["auditor", "admin"]);
-      return sendJson(res, 200, verifyLedger(ledger.path));
+      return sendJson(res, 200, await verifyLedgerStream(ledger.path));
     }
     if (m === "GET" && p === "/api/ledger/export") {
       await authenticate(req, ["auditor", "admin"]);
       const fmt = url.searchParams.get("format") ?? "ocsf";
-      const recs = queryRecords(ledger.read(), { ...Object.fromEntries(url.searchParams), order: "asc" } as LedgerQuery);
+      const q = Object.fromEntries(url.searchParams) as LedgerQuery;
       const map = fmt === "otel" ? toOtelSpan : fmt === "raw" ? (r: ActionRecord) => r : toOcsf;
       res.writeHead(200, { "content-type": "application/x-ndjson", "content-disposition": `attachment; filename="mandat-${fmt}.ndjson"` });
-      res.end(recs.map((r) => JSON.stringify(map(r))).join("\n") + "\n");
+      const lines = async function* () {
+        let sent = 0;
+        for await (const r of streamLedger(ledger.path)) {
+          if (!matchesQuery(r, q)) continue;
+          yield JSON.stringify(map(r)) + "\n";
+          if (q.limit && ++sent >= Number(q.limit)) return;
+        }
+      };
+      await pipeline(Readable.from(lines()), res).catch(() => { /* the client went away */ });
       return;
     }
     if (m === "GET" && p === "/api/report") {
       await authenticate(req, ["auditor", "admin"]);
+      // shortcut: a report loads every record, so very large ledgers are refused; make buildReport stream to lift this.
+      if (existsSync(ledger.path) && statSync(ledger.path).size > MAX_REPORT_LEDGER_BYTES) throw new HttpError(413, "ledger_too_large", "The ledger is too large for a report on the server. Run `mandat ledger report` on a machine with enough memory.");
       const data = buildReport(ledger.read(), { from: url.searchParams.get("from") ?? undefined, to: url.searchParams.get("to") ?? undefined, retentionDays: config.ledger?.retentionDays });
       if (url.searchParams.get("format") === "json") return sendJson(res, 200, data);
       res.writeHead(200, { "content-type": "text/markdown; charset=utf-8" });
@@ -501,17 +518,8 @@ export function createControlPlane(config: ControlPlaneConfig): ControlPlane {
     }
     if (m === "GET" && p === "/api/stats") {
       await authenticate(req, ["auditor", "admin", "approver"]);
-      const recs = ledger.read();
-      const since = new Date(Date.now() - 24 * 3_600_000).toISOString();
-      const calls = recs.filter((r) => r.type === "agent.tool_call" && r.ts >= since);
       return sendJson(res, 200, {
-        last_24h: {
-          calls: calls.length,
-          allowed: calls.filter((c) => c.decision?.final === "allow").length,
-          denied: calls.filter((c) => c.decision?.final === "deny").length,
-          pending: calls.filter((c) => c.decision?.final === "pending").length,
-          p99_decision_us: percentile(calls.map((c) => c.decision?.latency_us ?? 0), 0.99),
-        },
+        last_24h: recent.last24h(),
         pending_approvals: approvals.list("pending").length,
         agents: agents.all().length,
         active_revocations: revocations.filter((r) => r.blocks_issuance).length,
@@ -547,10 +555,4 @@ export function createControlPlane(config: ControlPlaneConfig): ControlPlane {
       await new Promise<void>((r) => { server.close(() => r()); server.closeAllConnections(); });
     },
   };
-}
-
-function percentile(xs: number[], p: number): number {
-  if (!xs.length) return 0;
-  const s = [...xs].sort((a, b) => a - b);
-  return s[Math.min(s.length - 1, Math.floor(p * s.length))]!;
 }
