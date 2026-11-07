@@ -5,7 +5,7 @@
 // Any edit, deletion or reordering of a past line breaks every later hash; `verifyLedger`
 // pinpoints the first broken record. One JSON object per line (JSONL).
 
-import { appendFileSync, closeSync, createReadStream, existsSync, fstatSync, mkdirSync, openSync, readSync } from "node:fs";
+import { appendFileSync, closeSync, createReadStream, existsSync, fstatSync, mkdirSync, openSync, readSync, truncateSync } from "node:fs";
 import { dirname } from "node:path";
 import { createInterface } from "node:readline";
 import { canonicalJson, randomId, sha256 } from "../util.ts";
@@ -95,6 +95,7 @@ export class FileLedger implements LedgerSink {
   constructor(path: string) {
     this.path = path;
     mkdirSync(dirname(path), { recursive: true });
+    moveTornTailAside(path);
     const last = readLastLine(path);
     if (last) {
       const rec = JSON.parse(last) as ActionRecord;
@@ -333,6 +334,35 @@ export class LedgerWindow {
     out.p99_decision_us = latencies[Math.min(latencies.length - 1, Math.floor(0.99 * latencies.length))] ?? 0;
     return out;
   }
+}
+
+/**
+ * Every complete record ends in a newline, so bytes after the last one are a write cut short by a crash.
+ * They move to `<ledger>.torn` for inspection. A complete line that fails to parse still stops startup: that is tampering.
+ */
+function moveTornTailAside(path: string): void {
+  if (!existsSync(path)) return;
+  const fd = openSync(path, "r");
+  let size: number, cut = 0;
+  try {
+    size = fstatSync(fd).size;
+    for (let end = size; end > 0;) {
+      const start = Math.max(0, end - 65_536);
+      const buf = Buffer.alloc(end - start);
+      readSync(fd, buf, 0, buf.length, start);
+      const nl = buf.lastIndexOf(10);
+      if (nl >= 0) { cut = start + nl + 1; break; }
+      end = start;
+    }
+    if (cut === size) return;
+    const torn = Buffer.alloc(size - cut);
+    readSync(fd, torn, 0, torn.length, cut);
+    appendFileSync(`${path}.torn`, Buffer.concat([torn, Buffer.from("\n")]));
+  } finally {
+    closeSync(fd);
+  }
+  truncateSync(path, cut);
+  console.error(`[mandat] ${path}: moved ${size - cut} bytes of an unfinished write to ${path}.torn`);
 }
 
 function readLastLine(path: string): string | null {

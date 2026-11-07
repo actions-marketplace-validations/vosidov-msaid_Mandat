@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FileLedger, LedgerWindow, MemoryLedger, queryLedger, readLedger, verifyLedger, verifyLedgerStream, verifyRecords, type ActionRecord } from "../src/ledger/ledger.ts";
@@ -61,6 +61,27 @@ test("ledger: files larger than the read chunk stay readable, verifiable and que
   assert.deepEqual((await queryLedger(path, { limit: 2, order: "asc" })).map((r) => r.seq), [1, 2]);
   writeFileSync(path, readFileSync(path, "utf8").replace('"i":7,', '"i":8,'));
   assert.equal((await verifyLedgerStream(path)).ok, false);
+});
+
+test("ledger: a write cut short by a crash is moved aside; the chain continues", () => {
+  const path = join(mkdtempSync(join(tmpdir(), "mandat-ledger-")), "ledger.jsonl");
+  const first = new FileLedger(path);
+  first.append(call(1));
+  first.append(call(2));
+  appendFileSync(path, '{"id":"rec_torn","seq":3,"text":"é'.slice(0, -1) + "\xc3");
+  const reopened = new FileLedger(path);
+  assert.equal(reopened.length, 2);
+  reopened.append(call(3));
+  assert.deepEqual(verifyLedger(path).ok, true);
+  assert.equal(verifyLedger(path).count, 3);
+  assert.match(readFileSync(`${path}.torn`, "utf8"), /rec_torn/);
+});
+
+test("ledger: a complete line that does not parse still stops startup", () => {
+  const path = join(mkdtempSync(join(tmpdir(), "mandat-ledger-")), "ledger.jsonl");
+  new FileLedger(path).append(call(1));
+  appendFileSync(path, "not json\n");
+  assert.throws(() => new FileLedger(path), SyntaxError);
 });
 
 test("ledger window: bounded memory, recent ids, 24-hour counts", () => {
