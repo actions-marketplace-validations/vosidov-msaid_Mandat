@@ -10,6 +10,7 @@ import { startFakeIdp, type FakeIdp } from "./fake-idp.ts";
 import { createControlPlane, createGuard, McpHttpServer, McpHttpClient, exchangeToken, devLogin, hashApiKey, signJwt, buildReport, type ControlPlane, type Guard } from "../src/index.ts";
 import { STARTER_POLICY } from "../src/cli/templates.ts";
 import { tools } from "../examples/refund-server/tools.ts";
+import { HumanAuth } from "../src/controlplane/humans.ts";
 import { main } from "../src/cli/main.ts";
 import { nowSeconds } from "../src/util.ts";
 
@@ -81,6 +82,16 @@ test("console sign-in: IdP login sets a session; access requires an explicit rol
 
   await fetch(`${issuer}/auth/logout`, { method: "POST", headers: { cookie, "x-requested-with": "mandat" } });
   assert.equal((await call("GET", "/api/whoami", { cookie })).status, 401);
+});
+
+test("e-mail grants need an e-mail the IdP confirms as verified; subject grants do not", () => {
+  const h = new HumanAuth({ dataDir: mkdtempSync(join(tmpdir(), "mandat-users-")), publicUrl: "http://x", login: null });
+  h.users.put({ id: "boss@acme.example", email: "boss@acme.example", roles: ["admin"], created_at: "", by: "" });
+  h.users.put({ id: "auth0|sam", sub: "auth0|sam", roles: ["approver"], created_at: "", by: "" });
+  assert.equal(h.findUser("someone", "boss@acme.example", true)?.id, "boss@acme.example");
+  assert.equal(h.findUser("someone", "boss@acme.example", false), undefined);
+  assert.equal(h.findUser("someone", "boss@acme.example", undefined), undefined);
+  assert.equal(h.findUser("auth0|sam", undefined, undefined)?.id, "auth0|sam");
 });
 
 test("CLI sign-in: IdP ID token as bearer; wrong audience and dev-IdP tokens are refused", async () => {

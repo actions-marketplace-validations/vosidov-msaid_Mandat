@@ -59,11 +59,11 @@ export class HumanAuth {
   get loginIssuer(): string | null { return this.login?.issuer ?? null; }
   get redirectUri(): string { return `${this.publicUrl}/auth/callback`; }
 
-  /** Finds the grant for a verified identity: by IdP subject, or by e-mail unless the IdP says it is unverified. */
+  /** Finds the grant for a verified identity: by IdP subject, or by e-mail only if the IdP confirms it is verified. */
   findUser(sub: string, email?: string, emailVerified?: boolean): HumanUser | undefined {
     const bySub = this.users.all().find((u) => u.sub === sub);
     if (bySub) return bySub;
-    if (!email || emailVerified === false) return undefined;
+    if (!email || emailVerified !== true) return undefined;
     return this.users.get(email.toLowerCase());
   }
 
@@ -71,7 +71,7 @@ export class HumanAuth {
     const u = this.findUser(sub, email, emailVerified);
     if (!u) {
       const who = email ?? sub;
-      throw new HttpError(403, "no_role", `Signed in as ${who}, but no role is granted. An admin can run: mandat users grant ${email ? `--email ${email}` : `--sub ${sub}`} --roles approver`);
+      throw new HttpError(403, "no_role", `Signed in as ${who}, but no role is granted. An admin can run: mandat users grant ${email && emailVerified === true ? `--email ${email}` : `--sub ${sub}`} --roles approver`);
     }
     return { id: u.id, roles: u.roles, via, sub, email };
   }

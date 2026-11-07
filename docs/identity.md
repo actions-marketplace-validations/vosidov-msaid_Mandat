@@ -44,6 +44,8 @@ mandat users list
 mandat users revoke colleague@example.com
 ```
 
+A grant by e-mail applies only when the ID token says `email_verified: true`. If your provider doesn't send that claim, grant by subject instead: `mandat users grant --sub <subject> --roles approver`.
+
 - **Console:** click **Sign in with <your-provider>**. The session is an HttpOnly, SameSite=Strict cookie valid for 8 hours.
 - **CLI:** add `--login`, for example `mandat approvals approve apr_… --login`.
 - **Self-approval is refused.** It's checked against every verified identifier of the approver (IdP subject and e-mail).
