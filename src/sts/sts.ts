@@ -9,7 +9,7 @@
 // The user's own token is never forwarded downstream: resource servers only see Mandat tokens.
 
 import { createPublicKey, type KeyObject } from "node:crypto";
-import { JwksClient, JwtError, signJwt, verifyJwt, type JwtPayload, type SigningKey } from "./jwt.ts";
+import { JwksClient, JwtError, decodeJwt, signJwt, verifyJwt, type JwtPayload, type SigningKey } from "./jwt.ts";
 import { blocksIssuance, matchRevocation, type ActClaim, type MandatClaim, type Revocation } from "./revocation.ts";
 import type { AuthorizationDetail } from "../policy/engine.ts";
 import { globMatch, nowSeconds, randomId, safeEqual, sha256 } from "../util.ts";
@@ -127,6 +127,7 @@ export class Sts {
 
     const subject = await this.verifySubject(subjectToken);
     const parent = subject.mandatParent;
+    if (parent && parent.aud !== resource) throw new OAuthError("invalid_target", "A sub-agent's token must be for the same resource as its parent's");
 
     const blocked = blocksIssuance(this.opts.revocations(), { agent: agent.id, version, sub: subject.sub, tenant: subject.tenant });
     if (blocked) throw new OAuthError("access_denied", `Issuance blocked by revocation ${blocked.id} (${blocked.type}: ${blocked.value})`, 403);
@@ -153,7 +154,6 @@ export class Sts {
       tenant: subject.tenant,
       session_id: form.get("mandat_session_id"),
     };
-    const scope = form.get("scope");
     const payload: JwtPayload = {
       iss: this.opts.issuer,
       sub: subject.sub,
@@ -166,7 +166,6 @@ export class Sts {
       act,
       authorization_details: details,
       mandat,
-      ...(scope ? { scope } : {}),
       ...(subject.email ? { email: subject.email } : {}),
     };
     // RFC 9068 typ distinguishes access tokens from ID tokens signed by the same key.
@@ -185,14 +184,13 @@ export class Sts {
       token_type: "Bearer",
       expires_in: ttl,
       authorization_details: details,
-      ...(scope ? { scope } : {}),
     };
   }
 
   private async verifySubject(token: string): Promise<{ sub: string; tenant: string | null; email?: string; mandatParent?: JwtPayload }> {
     let iss: unknown;
     try {
-      iss = JSON.parse(Buffer.from(token.split(".")[1] ?? "", "base64url").toString("utf8")).iss;
+      iss = decodeJwt(token).payload.iss;
     } catch {
       throw new OAuthError("invalid_grant", "subject_token is not a JWT");
     }
@@ -221,9 +219,7 @@ export class Sts {
    * agent tokens are deliberately not accepted here: anyone can mint the former.
    */
   async verifyIdpToken(token: string): Promise<{ iss: string; sub: string; email?: string; email_verified?: boolean; tenant: string | null }> {
-    let iss: unknown;
-    try { iss = JSON.parse(Buffer.from(token.split(".")[1] ?? "", "base64url").toString("utf8")).iss; } catch { throw new JwtError("malformed", "Not a JWT"); }
-    return this.verifyTrusted(token, iss);
+    return this.verifyTrusted(token, decodeJwt(token).payload.iss);
   }
 
   private async verifyTrusted(token: string, iss: unknown): Promise<{ iss: string; sub: string; email?: string; email_verified?: boolean; tenant: string | null }> {
@@ -271,6 +267,8 @@ export class Sts {
             ...pl, ...cl,
             ...(pl.max !== undefined ? { max: Math.min(pl.max, cl.max ?? Infinity) } : {}),
             ...(pl.min !== undefined ? { min: Math.max(pl.min, cl.min ?? -Infinity) } : {}),
+            ...(pl.enum !== undefined ? { enum: pl.enum.filter((v) => !cl.enum || cl.enum.includes(v)) } : {}),
+            ...(pl.equals !== undefined ? { equals: pl.equals } : {}),
           };
         }
       }

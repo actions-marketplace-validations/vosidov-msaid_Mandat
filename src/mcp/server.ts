@@ -43,7 +43,6 @@ export class McpHttpServer {
   readonly opts: McpServerOptions;
   readonly path: string;
   private tools: Map<string, ToolSpec>;
-  private sessions = new Set<string>();
   server: Server | null = null;
 
   constructor(opts: McpServerOptions) {
@@ -81,8 +80,6 @@ export class McpHttpServer {
       }
 
       if (req.method === "DELETE") {
-        const sid = req.headers["mcp-session-id"];
-        if (typeof sid === "string") this.sessions.delete(sid);
         res.writeHead(204).end();
         return;
       }
@@ -100,7 +97,6 @@ export class McpHttpServer {
       for (const msg of batch as JsonRpcRequest[]) {
         if (msg?.method === "initialize") {
           sessionId = randomId("mcp_");
-          this.sessions.add(sessionId);
           headers["mcp-session-id"] = sessionId;
         }
         const r = await this.dispatch(msg, auth, sessionId);

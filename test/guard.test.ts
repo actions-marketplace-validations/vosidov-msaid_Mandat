@@ -23,6 +23,17 @@ test("guard: verifies token audience, issuer, typ and act", async () => {
   g.close();
 });
 
+test("guard: a flood of made-up tokens writes one short ledger record", async () => {
+  const g = embeddedGuard(REFUND_POLICY);
+  const b64 = (o: unknown) => Buffer.from(JSON.stringify(o)).toString("base64url");
+  for (let i = 0; i < 50; i++) {
+    await assert.rejects(g.guard.verify(`${b64({ alg: "none" })}.${b64({ sub: `user-${i}-${"x".repeat(5000)}` })}.AA`), AuthError);
+  }
+  assert.equal(g.ledger.records.length, 1);
+  assert.ok(JSON.stringify(g.ledger.records[0]).length < 1500);
+  g.close();
+});
+
 test("guard: allow, deny, one ledger record per call with redacted args", async () => {
   const g = embeddedGuard(REFUND_POLICY);
   const auth = await g.guard.verify(taskToken(g.key));
@@ -35,6 +46,17 @@ test("guard: allow, deny, one ledger record per call with redacted args", async 
   assert.match((calls[2]!.args as any).body, /REDACTED/);
   assert.equal(calls[0]!.principal?.sub, "user:maria");
   assert.equal(calls[0]!.tool?.server, RESOURCE);
+  g.close();
+});
+
+test("guard: oversized args are recorded as a hash, so audit delivery cannot stall", async () => {
+  const g = embeddedGuard(REFUND_POLICY);
+  const auth = await g.guard.verify(taskToken(g.key));
+  const args = Object.fromEntries(Array.from({ length: 300 }, (_, i) => [`k${i}`, "y".repeat(4000)]));
+  await g.guard.execute({ auth, tool: "lookup", args }, ok);
+  const logged = JSON.stringify(g.ledger.records.at(-1)!.args);
+  assert.match(logged, /"\[truncated\]":"sha256:/);
+  assert.ok(logged.length < 200);
   g.close();
 });
 

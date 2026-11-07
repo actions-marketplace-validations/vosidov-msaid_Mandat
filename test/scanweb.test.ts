@@ -2,6 +2,7 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { createServer, type Server } from "node:http";
+import { createServer as createTcpServer, type AddressInfo } from "node:net";
 import { createSafeFetch, isBlockedAddress, createScanWebServer, scanRemote } from "../src/index.ts";
 
 const started: Array<{ close(): Promise<void> | void }> = [];
@@ -26,6 +27,15 @@ async function insecureMcp(): Promise<string> {
   return `http://127.0.0.1:${port}/mcp`;
 }
 
+/** A server that answers every request with a status outside the range a fetch Response allows. */
+async function invalidStatusServer(): Promise<string> {
+  const reply = "HTTP/1.1 999 Nope\r\ncontent-length: 0\r\nconnection: close\r\n\r\n";
+  const srv = createTcpServer((s) => { s.on("error", () => {}); s.once("data", () => s.end(reply)); });
+  await new Promise<void>((r) => srv.listen(0, "127.0.0.1", () => r()));
+  started.push({ close: () => new Promise<void>((r) => srv.close(() => r())) });
+  return `http://127.0.0.1:${(srv.address() as AddressInfo).port}/mcp`;
+}
+
 async function site(opts: Parameters<typeof createScanWebServer>[0] extends infer O ? Partial<O> : never = {}) {
   const s = createScanWebServer({ port: 0, ...opts } as never);
   const base = await s.listen();
@@ -36,6 +46,13 @@ async function site(opts: Parameters<typeof createScanWebServer>[0] extends infe
   };
   return { base, post, s };
 }
+
+test("safe fetch: a status outside 200-599 rejects instead of crashing the process", async () => {
+  const url = await invalidStatusServer();
+  await assert.rejects(createSafeFetch({ allowPrivate: true })(url), /status/);
+  const { post } = await site({ allowPrivate: true });
+  assert.equal((await post("/api/scan", { url })).status, 200);
+});
 
 test("SSRF: private, loopback, link-local, metadata and reserved addresses are blocked", async () => {
   for (const a of ["127.0.0.1", "10.0.0.5", "172.20.1.1", "192.168.0.10", "169.254.169.254", "100.64.1.1", "0.0.0.0", "::1", "fe80::1", "fd12::1", "::ffff:10.0.0.1", "224.0.0.1"])

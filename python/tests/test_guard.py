@@ -15,6 +15,8 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.asymmetric.utils import decode_dss_signature
 
 from mandat import AuthError, Guard, GuardDenied, MemoryLedger, StaticPolicy, compile_policy
+from mandat.jwt import JwksClient
+from mandat.remote import ControlPlane, HttpLedger
 from mandat.revocation import match_revocation
 
 ISSUER = "https://mandat.test"
@@ -94,6 +96,28 @@ class LocalApprovals:
         self.items[approval_id]["votes"].append({"by": "alice", "decision": "approve"})
 
 
+class AuditQueueTests(unittest.TestCase):
+    def test_dropped_records_are_counted_and_reported(self) -> None:
+        logged: list[str] = []
+        sink = HttpLedger(ControlPlane("http://127.0.0.1:1", "k", log=logged.append), flush_interval=3600)
+        for _ in range(100_003):
+            sink.append({"type": "agent.tool_call"})
+        self.assertEqual(sink.dropped, 3)
+        self.assertEqual(len(logged), 1)
+        self.assertIn("Audit queue is full", logged[0])
+
+
+class JwksTests(unittest.IsolatedAsyncioTestCase):
+    async def test_cached_keys_survive_an_outage(self) -> None:
+        client = JwksClient("http://127.0.0.1:1/jwks", ttl=0, min_refresh=0)
+        client._keys = {"k1": Signer().key.public_key()}
+        client._fetched_at = time.monotonic() - 10
+        self.assertIsNotNone(await client.get_key("k1"))
+        client._keys, client._fetched_at = {}, 0.0
+        with self.assertRaises(OSError):
+            await client.get_key("k1")
+
+
 class GuardTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         self.signer = Signer()
@@ -125,6 +149,21 @@ class GuardTests(unittest.IsolatedAsyncioTestCase):
         auth = await self.guard.verify(self.signer.token())
         self.assertEqual((auth.principal["sub"], auth.agent["id"], auth.actor_chain), ("user:maria", "support-bot", ["support-bot"]))
         self.assertTrue(any(r["type"] == "auth.rejected" and r["details"]["code"] == "bad_aud" for r in self.ledger.records))
+
+    async def test_flood_of_made_up_tokens_writes_one_short_record(self) -> None:
+        for i in range(50):
+            with self.assertRaises(AuthError):
+                await self.guard.verify(self.signer.token(header={"alg": "none"}, sub=f"user-{i}-{'x' * 5000}"))
+        self.assertEqual(len(self.ledger.records), 1)
+        self.assertLess(len(json.dumps(self.ledger.records[0])), 1500)
+
+    async def test_oversized_args_are_recorded_as_a_hash(self) -> None:
+        auth = await self.guard.verify(self.signer.token())
+        args = {f"k{i}": "y" * 4000 for i in range(300)}
+        await self.guard.execute(auth, "lookup", args, lambda: "ok")
+        logged = self.ledger.records[-1]["args"]
+        self.assertEqual(list(logged), ["[truncated]"])
+        self.assertTrue(logged["[truncated]"].startswith("sha256:"))
 
     async def test_allow_deny_and_one_record_per_call(self) -> None:
         auth = await self.guard.verify(self.signer.token())

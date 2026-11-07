@@ -218,6 +218,9 @@ class RemoteApprovals:
         return bool((await asyncio.to_thread(self.cp.call, "POST", f"/api/approvals/{approval_id}/consume", {}))["consumed"])
 
 
+_MAX_QUEUED_RECORDS = 100_000
+
+
 class HttpLedger:
     """Ships records to the control plane ledger: batched, off the request path, at-least-once.
 
@@ -232,6 +235,7 @@ class HttpLedger:
         self._stop = threading.Event()
         self._auth_warned = False
         self.last_error: str | None = None
+        self.dropped = 0  # records lost because the queue was full
         self._interval = flush_interval
         threading.Thread(target=self._loop, daemon=True).start()
 
@@ -239,8 +243,11 @@ class HttpLedger:
         rec = {"id": f"rec_{uuid.uuid4()}", "ts": now_iso(), **record}
         with self._lock:
             self._queue.append(rec)
-            if len(self._queue) > 100_000:
+            if len(self._queue) > _MAX_QUEUED_RECORDS:
                 self._queue.pop(0)
+                self.dropped += 1
+                if self.dropped % 10_000 == 1:
+                    self.cp.log(f"Audit queue is full: {self.dropped} oldest record(s) dropped so far. Last delivery error: {self.last_error or 'none'}")
 
     def _loop(self) -> None:
         while not self._stop.wait(self._interval):
