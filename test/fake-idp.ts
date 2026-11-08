@@ -14,7 +14,7 @@ export interface FakeIdp {
   browser: (url: string) => Promise<void>;
   idTokenTtl: number;
   refreshCount: number;
-  user: { sub: string; email: string; name: string; org_id: string };
+  user: { sub: string; email: string; email_verified: boolean; name: string; org_id: string };
   close(): Promise<void>;
 }
 
@@ -26,7 +26,7 @@ export async function startFakeIdp(opts: { idTokenTtl?: number; issueRefreshToke
   const refreshTokens = new Set<string>();
   const state: FakeIdp = {
     issuer: "", clientId: "native-client-123", key, idTokenTtl: opts.idTokenTtl ?? 3600, refreshCount: 0,
-    user: { sub: "auth0|maria", email: "maria@acme.example", name: "Maria", org_id: "org_acme" },
+    user: { sub: "auth0|maria", email: "maria@acme.example", email_verified: true, name: "Maria", org_id: "org_acme" },
     browser: async (url: string) => {
       const res = await fetch(url, { redirect: "manual" });
       const loc = res.headers.get("location");

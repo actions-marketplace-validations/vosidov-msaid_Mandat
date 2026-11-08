@@ -9,6 +9,7 @@ import { join } from "node:path";
 import { createControlPlane, createGuard, McpHttpServer, McpHttpClient, exchangeToken, devLogin, hashApiKey, scanRemote, protect, RemoteRevocations, type ControlPlane, type Guard } from "../src/index.ts";
 import { STARTER_POLICY } from "../src/cli/templates.ts";
 import { tools } from "../examples/refund-server/tools.ts";
+import { HttpLedgerSink } from "../src/guard/remote.ts";
 
 const port = () => new Promise<number>((r) => { const s = createServer(); s.listen(0, "127.0.0.1", () => { const p = (s.address() as { port: number }).port; s.close(() => r(p)); }); });
 const keys = { admin: "mdt_admin_test_key_000000000000", approver: "mdt_approver_test_key_0000000", service: "mdt_service_test_key_00000000" };
@@ -106,6 +107,35 @@ test("e2e: a guard with a key the control plane rejects fails loudly", async () 
   revs.close();
   assert.equal(warnings.length, 1);
   assert.match(warnings[0]!, /rejected this guard's API key \(HTTP 401\); revocations cannot be refreshed/);
+});
+
+test("e2e: a backlog of large audit records is delivered, not stuck", async () => {
+  const sink = new HttpLedgerSink({ url: issuer, apiKey: keys.service }, { flushIntervalMs: 3_600_000 });
+  for (let i = 0; i < 200; i++) sink.append({ type: "agent.tool_call", args: { body: "e".repeat(50_000) } });
+  await sink.close();
+  assert.equal(sink.pending, 0, sink.lastError ?? "");
+});
+
+test("e2e: stats, activity and export answer from the running ledger", async () => {
+  const stats = await api(keys.admin, "GET", "/api/stats");
+  assert.ok(stats.body.last_24h.calls > 0);
+  assert.equal(stats.body.ledger.records, cp.ledger.length);
+  const activity = await api(keys.admin, "GET", "/api/ledger?limit=2&type=agent.tool_call");
+  assert.equal(activity.body.records.length, 2);
+  const res = await fetch(`${issuer}/api/ledger/export?format=raw&type=agent.tool_call&limit=3`, { headers: { authorization: `Bearer ${keys.admin}` } });
+  const lines = (await res.text()).trim().split("\n");
+  assert.equal(lines.length, 3);
+  assert.ok(lines.every((l) => JSON.parse(l).type === "agent.tool_call"));
+});
+
+test("audit queue: records dropped during a long outage are counted and reported", () => {
+  const logged: string[] = [];
+  const sink = new HttpLedgerSink({ url: "http://127.0.0.1:1", apiKey: "k", log: (m) => logged.push(m) }, { flushIntervalMs: 3_600_000 });
+  for (let i = 0; i < 100_003; i++) sink.append({ type: "agent.tool_call" });
+  assert.equal(sink.dropped, 3);
+  assert.equal(logged.length, 1);
+  assert.match(logged[0]!, /Audit queue is full/);
+  void sink.close();
 });
 
 test("e2e: ingest is idempotent (at-least-once delivery without duplicates)", async () => {

@@ -167,6 +167,8 @@ export class RemoteApprovalBroker implements ApprovalBroker {
   }
 }
 
+const MAX_QUEUED_RECORDS = 100_000;
+
 /**
  * Ships records to the control plane ledger. Asynchronous and batched (off the critical path), with
  * at-least-once delivery: a batch stays queued until acknowledged. Records carry a client id, so the
@@ -180,6 +182,8 @@ export class HttpLedgerSink implements LedgerSink {
   private local?: LedgerSink;
   private authWarned = false;
   lastError: string | null = null;
+  /** Records lost because the queue was full. */
+  dropped = 0;
 
   constructor(o: ControlPlaneClientOptions, opts: { flushIntervalMs?: number; local?: LedgerSink } = {}) {
     this.o = o;
@@ -191,7 +195,10 @@ export class HttpLedgerSink implements LedgerSink {
   append(rec: RecordInput): ActionRecord | void {
     const withId = { ...rec, id: rec.id ?? `rec_${crypto.randomUUID()}`, ts: rec.ts ?? new Date().toISOString() };
     this.queue.push(withId);
-    if (this.queue.length > 100_000) this.queue.shift();
+    if (this.queue.length > MAX_QUEUED_RECORDS) {
+      this.queue.shift();
+      if (this.dropped++ % 10_000 === 0) this.o.log?.(`Audit queue is full: ${this.dropped} oldest record(s) dropped so far. Last delivery error: ${this.lastError ?? "none"}`);
+    }
     return this.local?.append(withId);
   }
 

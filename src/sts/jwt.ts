@@ -158,7 +158,13 @@ export class JwksClient {
 
   async getKey(kid: string | undefined): Promise<KeyObject | null> {
     const fresh = Date.now() - this.fetchedAt < this.ttlMs;
-    if (!fresh || (kid && !this.keys.has(kid) && Date.now() - this.fetchedAt > this.minRefreshMs)) await this.refresh();
+    if (!fresh || (kid && !this.keys.has(kid) && Date.now() - this.fetchedAt > this.minRefreshMs)) {
+      // An outage must not reject tokens the cached keys can still check: retry later instead.
+      await this.refresh().catch((e: unknown) => {
+        if (!this.keys.size) throw e;
+        this.fetchedAt = Date.now() - this.ttlMs + this.minRefreshMs;
+      });
+    }
     if (kid) return this.keys.get(kid) ?? null;
     return this.keys.size === 1 ? [...this.keys.values()][0]! : null;
   }

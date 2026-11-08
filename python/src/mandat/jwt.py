@@ -158,7 +158,13 @@ class JwksClient:
         if age > self.ttl or (kid and kid not in self._keys and age > self.min_refresh) or not self._fetched_at:
             async with self._lock:
                 if time.monotonic() - self._fetched_at > 1:  # another waiter may have refreshed already
-                    await asyncio.to_thread(self._refresh)
+                    try:
+                        await asyncio.to_thread(self._refresh)
+                    except Exception:
+                        # An outage must not reject tokens the cached keys can still check: retry later instead.
+                        if not self._keys:
+                            raise
+                        self._fetched_at = time.monotonic() - self.ttl + self.min_refresh
         if kid:
             return self._keys.get(kid)
         return next(iter(self._keys.values())) if len(self._keys) == 1 else None

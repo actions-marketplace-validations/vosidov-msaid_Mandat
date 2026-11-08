@@ -14,7 +14,7 @@ import { RateGate } from "../util.ts";
 import { actorChain, matchRevocation, type MandatClaim, type Revocation } from "../sts/revocation.ts";
 import { HIGH_RISK, type AuthorizationDetail, type CompiledPolicy, type Decision, type Obligation } from "../policy/engine.ts";
 import { approvalBinding, type ApprovalRequest, type ApprovalService, type NewApproval } from "../approvals/approvals.ts";
-import { redact, type RedactionOptions } from "../ledger/redact.ts";
+import { hashValue, redact, type RedactionOptions } from "../ledger/redact.ts";
 import type { ActionRecord, LedgerSink, RecordInput } from "../ledger/ledger.ts";
 import { checkPins, toolHash, type DriftReport, type ToolDefinition } from "./pinning.ts";
 
@@ -129,6 +129,8 @@ export class GuardDenied extends Error {
 interface SessionState { tainted: boolean; taint_sources: string[]; calls: number; touched: number }
 
 const SESSION_TTL_MS = 6 * 3_600_000;
+/** Keeps every record far below the size of an ingest batch (see /api/ledger/ingest). */
+const MAX_RECORDED_ARGS_BYTES = 100_000;
 
 export class Guard {
   readonly opts: GuardOptions;
@@ -173,16 +175,17 @@ export class Guard {
     let c: JwtPayload = {};
     try { c = decodeJwt(token).payload; } catch { /* not even a JWT */ }
     const agent = (c.act as { sub?: string } | undefined)?.sub ?? null;
-    const suppressed = this.rejectGate.allow(`${e.reason}|${agent}|${String(c.sub)}`);
+    // Keyed on the reason alone: everything inside the token is chosen by whoever sent it.
+    const suppressed = this.rejectGate.allow(e.reason);
     if (suppressed === null) return;
     this.append({
       type: "auth.rejected",
       details: {
         code: e.reason,
-        reason: e.message,
+        reason: e.message.slice(0, 300),
         resource: this.opts.resource,
         // Taken from a token that failed verification: informative only, never proof of identity.
-        unverified_claims: { iss: c.iss ?? null, sub: c.sub ?? null, agent, jti: c.jti ?? null, exp: c.exp ?? null },
+        unverified_claims: { iss: clip(c.iss), sub: clip(c.sub), agent: clip(agent), jti: clip(c.jti), exp: clip(c.exp) },
         suppressed_before: suppressed,
       },
     });
@@ -230,7 +233,7 @@ export class Guard {
           return {
             token,
             clientId: auth.agent.id,
-            scopes: typeof auth.claims.scope === "string" ? auth.claims.scope.split(" ") : [],
+            scopes: [],
             expiresAt: auth.claims.exp,
             resource: new URL(this.opts.resource),
             extra: { mandat: auth },
@@ -377,7 +380,8 @@ export class Guard {
 
   private redactArgs(args: Record<string, unknown>, obligations: Obligation[]): unknown {
     const fields = obligations.filter((o) => o.type === "redact").flatMap((o) => o.fields ?? []);
-    return redact(args, { ...this.opts.redaction, fields: [...(this.opts.redaction?.fields ?? []), ...fields] });
+    const out = redact(args, { ...this.opts.redaction, fields: [...(this.opts.redaction?.fields ?? []), ...fields] });
+    return Buffer.byteLength(JSON.stringify(out)) > MAX_RECORDED_ARGS_BYTES ? { "[truncated]": hashValue(args) } : out;
   }
 
   private append(rec: RecordInput): ActionRecord | void {
@@ -389,9 +393,14 @@ export class Guard {
   }
 }
 
+/** Bounds a value taken from an unverified token before it reaches the ledger. */
+function clip(v: unknown): string | number | null {
+  return typeof v === "string" ? v.slice(0, 200) : typeof v === "number" ? v : null;
+}
+
 /** Selected token claims exposed to policies as principal.* (never the raw token). */
 function pickClaims(c: JwtPayload): Record<string, unknown> {
   const out: Record<string, unknown> = {};
-  for (const k of ["scope", "client_id", "email"]) if (c[k] !== undefined) out[k] = c[k];
+  for (const k of ["client_id", "email"]) if (c[k] !== undefined) out[k] = c[k];
   return out;
 }

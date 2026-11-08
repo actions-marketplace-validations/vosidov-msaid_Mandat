@@ -23,7 +23,7 @@ from typing import Any, Awaitable, Callable
 
 from .jwt import JwksClient, JwtError, decode_jwt, verify_jwt
 from .policy import HIGH_RISK, CompiledPolicy, Decision, canonical_json
-from .redact import redact
+from .redact import hash_value, redact
 from .remote import (
     ControlPlane,
     FilePolicy,
@@ -82,6 +82,15 @@ class _Session:
     taint_sources: list[str] = field(default_factory=list)
     calls: int = 0
     touched: float = field(default_factory=time.monotonic)
+
+
+# Keeps every record far below the size of an ingest batch (see /api/ledger/ingest).
+_MAX_RECORDED_ARGS_BYTES = 100_000
+
+
+def _clip(v: Any) -> str | int | float | None:
+    """Bounds a value taken from an unverified token before it reaches the ledger."""
+    return v[:200] if isinstance(v, str) else v if isinstance(v, (int, float)) else None
 
 
 class _RateGate:
@@ -213,17 +222,18 @@ class Guard:
         except JwtError:
             c = {}
         agent = (c.get("act") or {}).get("sub") if isinstance(c.get("act"), dict) else None
-        suppressed = self._reject_gate.allow(f"{e.reason}|{agent}|{c.get('sub')}")
+        # Keyed on the reason alone: everything inside the token is chosen by whoever sent it.
+        suppressed = self._reject_gate.allow(e.reason)
         if suppressed is None:
             return
         self._append({
             "type": "auth.rejected",
             "details": {
                 "code": e.reason,
-                "reason": str(e),
+                "reason": str(e)[:300],
                 "resource": self.resource,
                 # From a token that failed verification: informative only, never proof of identity.
-                "unverified_claims": {"iss": c.get("iss"), "sub": c.get("sub"), "agent": agent, "jti": c.get("jti"), "exp": c.get("exp")},
+                "unverified_claims": {"iss": _clip(c.get("iss")), "sub": _clip(c.get("sub")), "agent": _clip(agent), "jti": _clip(c.get("jti")), "exp": _clip(c.get("exp"))},
                 "suppressed_before": suppressed,
             },
         })
@@ -304,7 +314,7 @@ class Guard:
             raise deny("drift", f"Tool '{tool}' changed since it was pinned; re-approve its definition with `mandat pin`", None)
 
         decision = policy.evaluate({
-            "principal": {**auth.principal, **{k: auth.claims[k] for k in ("scope", "client_id", "email") if k in auth.claims}},
+            "principal": {**auth.principal, **{k: auth.claims[k] for k in ("client_id", "email") if k in auth.claims}},
             "agent": auth.agent,
             "actor_chain": [{"sub": s} for s in auth.actor_chain],
             "tool": {"name": tool, "server": self.resource},
@@ -381,7 +391,8 @@ class Guard:
         fields = [f for o in obligations if o.get("type") == "redact" for f in o.get("fields", [])]
         opts = dict(self.redaction)
         opts["fields"] = [*opts.get("fields", []), *fields]
-        return redact(args, **opts)
+        out = redact(args, **opts)
+        return {"[truncated]": hash_value(args)} if len(json.dumps(out, default=str).encode()) > _MAX_RECORDED_ARGS_BYTES else out
 
     def _append(self, rec: dict[str, Any]) -> None:
         try:

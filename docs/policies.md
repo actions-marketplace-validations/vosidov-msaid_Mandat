@@ -38,7 +38,7 @@ A policy is a JSON file (`mandat.policy.json`), distributed by the control plane
 
 `when` is a small, safe expression language similar to CEL. It never evaluates code and can't reach the runtime.
 
-- **Context:** `principal.{sub, tenant, email, scope}`, `agent.{id, version, prompt_hash}`, `actor_chain[]`, `tool.{name, server, risk}`, `args.*`, `session.{tainted, taint_sources, calls}`, `task.{id, authorization_details}`, `env.{hour_utc, weekday_utc}`.
+- **Context:** `principal.{sub, tenant, email, client_id}`, `agent.{id, version, prompt_hash}`, `actor_chain[]`, `tool.{name, server, risk}`, `args.*`, `session.{tainted, taint_sources, calls}`, `task.{id, authorization_details}`, `env.{hour_utc, weekday_utc}`.
 - **Operators:** `== != < <= > >= in && || ! ?: + - * / %`
 - **Functions:** `size has int double string lower upper abs min max`
 - **Methods:** `startsWith endsWith contains matches size lower upper trim keys`

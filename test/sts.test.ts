@@ -1,7 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createPublicKey, generateKeyPairSync } from "node:crypto";
-import { decodeJwt, signJwt, verifyJwt, JwtError } from "../src/sts/jwt.ts";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
+import { JwksClient, decodeJwt, signJwt, verifyJwt, JwtError } from "../src/sts/jwt.ts";
 import { Sts, OAuthError, hashSecret, GRANT_TOKEN_EXCHANGE, TT_ACCESS_TOKEN, TT_ID_TOKEN, type AgentRecord } from "../src/sts/sts.ts";
 import { matchRevocation, type Revocation } from "../src/sts/revocation.ts";
 import { nowSeconds } from "../src/util.ts";
@@ -23,6 +25,20 @@ test("jwt: sign/verify ES256 and reject tampering, wrong aud, expiry, alg confus
   await assert.rejects(verifyJwt(old, () => pub), (e: JwtError) => e.code === "expired");
   const rsa = generateKeyPairSync("rsa", { modulusLength: 2048 }).publicKey;
   await assert.rejects(verifyJwt(tok, () => rsa), (e: JwtError) => e.code === "bad_alg");
+});
+
+test("jwks: cached keys keep working through an outage; with no keys the failure surfaces", async () => {
+  const k = testKey();
+  const srv = createServer((_req, res) => { res.setHeader("content-type", "application/json"); res.end(JSON.stringify({ keys: [k.publicJwk] })); });
+  await new Promise<void>((r) => srv.listen(0, "127.0.0.1", () => r()));
+  const url = `http://127.0.0.1:${(srv.address() as AddressInfo).port}/jwks`;
+  const client = new JwksClient(url, 20, 5);
+  assert.ok(await client.getKey(k.kid));
+  srv.closeAllConnections();
+  await new Promise((r) => srv.close(r));
+  await new Promise((r) => setTimeout(r, 40));
+  assert.ok(await client.getKey(k.kid), "the TTL passed while the server was down");
+  await assert.rejects(new JwksClient(url).getKey(k.kid));
 });
 
 function makeSts(revs: Revocation[] = []) {
@@ -63,6 +79,38 @@ test("sts: rejects bad client, unknown version, foreign resource, over-broad too
   await assert.rejects(sts.exchange(form({ subject_token: id, authorization_details: '[{"type":"mandat_tool_call","tools":["delete_all"]}]' }), { id: "support-bot", secret: "s1" }), (e) => code(e) === "invalid_authorization_details");
   const foreign = signJwt({ iss: "https://evil.test", sub: "admin", exp: nowSeconds() + 60 }, testKey());
   await assert.rejects(sts.exchange(form({ subject_token: foreign }), { id: "support-bot", secret: "s1" }), (e) => code(e) === "invalid_grant");
+});
+
+test("sts: an agent cannot give itself a scope", async () => {
+  const { sts } = makeSts();
+  const request = form({ subject_token: sts.devLogin({ sub: "user:maria" }) });
+  request.set("scope", "admin:everything");
+  const r = await sts.exchange(request, { id: "support-bot", secret: "s1" });
+  assert.equal(r.scope, undefined);
+  assert.equal(decodeJwt(r.access_token as string).payload.scope, undefined);
+});
+
+test("sts: a sub-agent cannot move a token to another resource", async () => {
+  const { sts } = makeSts();
+  const id = sts.devLogin({ sub: "user:maria" });
+  const parent = await sts.exchange(form({ subject_token: id }), { id: "support-bot", secret: "s1" });
+  await assert.rejects(
+    sts.exchange(new URLSearchParams({ grant_type: GRANT_TOKEN_EXCHANGE, subject_token: parent.access_token as string, subject_token_type: TT_ACCESS_TOKEN, resource: "https://other.test/mcp" }), { id: "billing-bot", secret: "s2" }),
+    (e: OAuthError) => e.error === "invalid_target",
+  );
+});
+
+test("sts: a sub-agent cannot widen enum or equals limits", async () => {
+  const { sts } = makeSts();
+  const id = sts.devLogin({ sub: "user:maria" });
+  const parent = await sts.exchange(form({ subject_token: id, authorization_details: '[{"type":"mandat_tool_call","tools":["refund"],"limits":{"currency":{"enum":["EUR","USD"]},"country":{"equals":"DE"}}}]' }), { id: "support-bot", secret: "s1" });
+  const child = await sts.exchange(
+    new URLSearchParams({ grant_type: GRANT_TOKEN_EXCHANGE, subject_token: parent.access_token as string, subject_token_type: TT_ACCESS_TOKEN, resource: "https://mcp.test/mcp", authorization_details: '[{"type":"mandat_tool_call","tools":["refund"],"limits":{"currency":{"enum":["EUR","BTC"]},"country":{"equals":"XX"}}}]' }),
+    { id: "billing-bot", secret: "s2" },
+  );
+  const limits = (decodeJwt(child.access_token as string).payload.authorization_details as any)[0].limits;
+  assert.deepEqual(limits.currency.enum, ["EUR"]);
+  assert.equal(limits.country.equals, "DE");
 });
 
 test("sts: nested delegation keeps the user, nests act, and can only narrow", async () => {

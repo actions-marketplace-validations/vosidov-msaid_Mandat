@@ -10,6 +10,7 @@ import { startFakeIdp, type FakeIdp } from "./fake-idp.ts";
 import { createControlPlane, createGuard, McpHttpServer, McpHttpClient, exchangeToken, devLogin, hashApiKey, signJwt, buildReport, type ControlPlane, type Guard } from "../src/index.ts";
 import { STARTER_POLICY } from "../src/cli/templates.ts";
 import { tools } from "../examples/refund-server/tools.ts";
+import { HumanAuth } from "../src/controlplane/humans.ts";
 import { main } from "../src/cli/main.ts";
 import { nowSeconds } from "../src/util.ts";
 
@@ -60,8 +61,10 @@ test("console sign-in: IdP login sets a session; access requires an explicit rol
   const toIdp = start.headers.get("location")!;
   assert.ok(toIdp.startsWith(`${idp.issuer}authorize`));
   assert.equal(new URL(toIdp).searchParams.get("redirect_uri"), `${issuer}/auth/callback`);
+  const loginCookie = start.headers.get("set-cookie")!.split(";")[0]!;
+  assert.match(start.headers.get("set-cookie")!, /HttpOnly; SameSite=Lax/);
   const back = await fetch(toIdp, { redirect: "manual" });
-  const callback = await fetch(back.headers.get("location")!);
+  const callback = await fetch(back.headers.get("location")!, { headers: { cookie: loginCookie } });
   assert.equal(callback.status, 200);
   const cookie = callback.headers.get("set-cookie")!.split(";")[0]!;
   assert.match(callback.headers.get("set-cookie")!, /HttpOnly; SameSite=Strict/);
@@ -81,6 +84,30 @@ test("console sign-in: IdP login sets a session; access requires an explicit rol
 
   await fetch(`${issuer}/auth/logout`, { method: "POST", headers: { cookie, "x-requested-with": "mandat" } });
   assert.equal((await call("GET", "/api/whoami", { cookie })).status, 401);
+});
+
+test("the dev IdP refuses to start anywhere but a local address", () => {
+  const config = { port: 0, dataDir: "unused", policyFile: "unused", devIdp: true, apiKeys: [] };
+  assert.throws(() => createControlPlane({ ...config, issuer: "http://127.0.0.1:1", host: "0.0.0.0" }), /only runs on a local address/);
+  assert.throws(() => createControlPlane({ ...config, issuer: "https://mandat.acme.example" }), /only runs on a local address/);
+});
+
+test("console sign-in: a login link from another browser does not sign you in", async () => {
+  const start = await fetch(`${issuer}/auth/login`, { redirect: "manual" });
+  const back = await fetch(start.headers.get("location")!, { redirect: "manual" });
+  const victim = await fetch(back.headers.get("location")!);
+  assert.equal(victim.status, 400);
+  assert.equal(victim.headers.get("set-cookie"), null);
+});
+
+test("e-mail grants need an e-mail the IdP confirms as verified; subject grants do not", () => {
+  const h = new HumanAuth({ dataDir: mkdtempSync(join(tmpdir(), "mandat-users-")), publicUrl: "http://x", login: null });
+  h.users.put({ id: "boss@acme.example", email: "boss@acme.example", roles: ["admin"], created_at: "", by: "" });
+  h.users.put({ id: "auth0|sam", sub: "auth0|sam", roles: ["approver"], created_at: "", by: "" });
+  assert.equal(h.findUser("someone", "boss@acme.example", true)?.id, "boss@acme.example");
+  assert.equal(h.findUser("someone", "boss@acme.example", false), undefined);
+  assert.equal(h.findUser("someone", "boss@acme.example", undefined), undefined);
+  assert.equal(h.findUser("auth0|sam", undefined, undefined)?.id, "auth0|sam");
 });
 
 test("CLI sign-in: IdP ID token as bearer; wrong audience and dev-IdP tokens are refused", async () => {
@@ -128,6 +155,17 @@ test("rejected logins are audited at the guard, the STS and the API (rate-limite
   assert.ok(all.length >= 4);
   const report = buildReport(cp.ledger.read());
   assert.ok(report.rejected_auth.total >= 4);
+});
+
+test("anonymous token requests cannot grow the ledger with made-up client ids", async () => {
+  const before = cp.ledger.length;
+  for (let i = 0; i < 5; i++) {
+    const body = new URLSearchParams({ grant_type: "urn:ietf:params:oauth:grant-type:token-exchange", client_id: `flood-${i}-${"z".repeat(50_000)}` });
+    assert.equal((await fetch(`${issuer}/oauth/token`, { method: "POST", body })).status, 401);
+  }
+  const added = cp.ledger.read().slice(before);
+  assert.ok(added.length <= 1, "one record per reason and source");
+  assert.ok(JSON.stringify(added).length < 1500);
 });
 
 test("agent secrets: rotate (old secret and its tokens stop working) and remove", async () => {
