@@ -36,7 +36,7 @@
     "demo:sdk-server": "node examples/sdk-server/server.ts"
   },
   "devDependencies": {
-    "@modelcontextprotocol/sdk": "1.32.1",
+    "@modelcontextprotocol/sdk": "1.32.2",
     "@types/express": "5.0.6",
     "@types/node": "^24.19.2",
     "express": "5.3.0",
